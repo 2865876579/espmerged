@@ -371,6 +371,19 @@ static record_result_t record_and_send(void)
     return notify_value == OPUS_UPLOAD_OK ? RECORD_SENT : RECORD_FAILED;
 }
 
+static void run_sleep_greeting(void)
+{
+    if (!wait_for_ws_connected(WS_READY_TIMEOUT_MS)) return;
+
+    ws_client_clear_events();
+    printf("\n[就寝] 检测到躺下 → 主动问候\n");
+    ws_client_send_text("用户刚刚躺下了，请温柔地主动问候一句");
+
+    turn_wait_result_t result = wait_for_turn_result(TURN_REPLY_TIMEOUT_MS);
+    (void)result;
+    // TTS 播完，回到正常唤醒模式
+}
+
 static void run_dialog(void)
 {
     s_dialog_active = true;
@@ -473,6 +486,11 @@ void app_main(void)
     uint8_t rx_buf[128];
     TickType_t last_ws_restart = xTaskGetTickCount();
     while (1) {
+        /* ★ 就寝检测：FSR 触发 → 无需唤醒词，主动问候 */
+        if (!s_dialog_active && sensor_person_just_laid_down()) {
+            run_sleep_greeting();
+        }
+
         if (s_wake_event) {
             run_dialog();
         }

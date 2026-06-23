@@ -107,6 +107,13 @@ static portMUX_TYPE   s_data_spinlock = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t   s_sensor_task_handle = NULL;
 static SemaphoreHandle_t s_i2c0_mutex = NULL;  /* MCP5010DP I2C0 互斥 */
 
+/* ── 人员就寝检测（FSR 力敏传感器）─────────────── */
+#define PERSON_FSR_THRESHOLD_N  1.0f
+#define PERSON_DEBOUNCE_COUNT    2       // 连续2秒确认
+static volatile bool s_person_on_bed  = false;
+static volatile bool s_person_event   = false;
+static          int  s_person_debounce = 0;
+
 /* ═══════════════════════════════════════════════════════════
  *  辅助函数
  * ═══════════════════════════════════════════════════════════ */
@@ -221,8 +228,7 @@ static void read_fsr402_all(sensor_data_t *out)
         if (sample.force_n > 0.0f) {
             out->fsr_force_n[i] = sample.force_n;
             out->fsr_valid[i] = true;
-            ESP_LOGD(TAG, "FSR%d raw=%d V=%.3f g=%.1f N=%.3f",
-                     i + 1, raw, voltage, sample.force_g, sample.force_n);
+            ESP_LOGD(TAG, "FSR%d N=%.3f", i + 1, sample.force_n);
         }
     }
 }
@@ -358,6 +364,24 @@ void sensor_task(void *arg)
         memcpy(&s_latest, &data, sizeof(s_latest));
         portEXIT_CRITICAL(&s_data_spinlock);
 
+        /* ── 人员就寝检测（FSR 力敏传感器）─────── */
+        bool person_now = false;
+        for (int i = 0; i < FSR_SENSOR_COUNT; i++) {
+            if (data.fsr_valid[i] && data.fsr_force_n[i] > PERSON_FSR_THRESHOLD_N) {
+                person_now = true; break;
+            }
+        }
+        if (person_now) {
+            if (++s_person_debounce >= PERSON_DEBOUNCE_COUNT && !s_person_on_bed) {
+                s_person_event = true;
+                s_person_on_bed = true;
+                ESP_LOGI(TAG, "person detected (FSR > %.0fN)", PERSON_FSR_THRESHOLD_N);
+            }
+        } else {
+            s_person_debounce = 0;
+            s_person_on_bed = false;
+        }
+
         /* 休眠 1s，可被 sensor_request_refresh 唤醒 */
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
     }
@@ -391,6 +415,13 @@ void sensor_get_latest(sensor_data_t *out)
     portENTER_CRITICAL(&s_data_spinlock);
     memcpy(out, &s_latest, sizeof(sensor_data_t));
     portEXIT_CRITICAL(&s_data_spinlock);
+}
+
+bool sensor_person_just_laid_down(void)
+{
+    bool val = s_person_event;
+    s_person_event = false;
+    return val;
 }
 
 void sensor_poll_ir(void)

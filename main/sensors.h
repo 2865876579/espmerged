@@ -84,6 +84,12 @@ float sensor_read_pressure_kpa(void);
 void sensor_request_refresh(void);
 
 /**
+ * 边沿触发：FSR 检测到有人躺下（>2N，去抖2秒）。
+ * 返回 true 一次后自动清除。仅在非对话状态调用。
+ */
+bool sensor_person_just_laid_down(void);
+
+/**
  * 轮询红外接收（20ms 非阻塞），收到帧时通过 KY-005 转发。
  * 应放在主循环中高频调用（每 50ms）。
  */

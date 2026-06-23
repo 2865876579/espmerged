@@ -23,8 +23,8 @@ typedef struct {
     float filtered_voltage_v;     // 滤波后的电压。
     float resistance_ohm;         // 根据分压公式换算出的 FSR402 电阻。
     float conductance_us;         // 电导，单位微西门子。
-    float force_g;                // 近似压力，单位克力。
     float force_n;                // 近似压力，单位牛顿。
+    float force_kgf;              // 近似压力，单位公斤力。
 } fsr402_sample_t;
 
 typedef struct {
@@ -41,7 +41,7 @@ void fsr402_set_zero_from_voltage(fsr402_t *sensor, float measured_voltage_v);
 fsr402_sample_t fsr402_update(fsr402_t *sensor, float measured_voltage_v);
 // 根据分压电路公式，把电压换算成 FSR402 电阻。
 float fsr402_voltage_to_resistance(const fsr402_config_t *config, float voltage_v);
-// 根据经验曲线，把 FSR402 电阻换算成近似克力。
-float fsr402_resistance_to_force_g(float resistance_ohm);
+// 根据经验曲线，把 FSR402 电阻换算成近似牛顿。
+float fsr402_resistance_to_force_n(float resistance_ohm);
 
 #endif  // FSR402_H

@@ -2,7 +2,7 @@
 #include <math.h>
 #include <stddef.h>
 
-#define FSR402_GRAMS_TO_NEWTONS 0.00980665f  // 1 克力约等于 0.00980665 牛顿。
+#define FSR402_NEWTONS_PER_KGF 9.80665f
 
 static float clampf(float value, float min_value, float max_value)
 {
@@ -69,8 +69,8 @@ fsr402_sample_t fsr402_update(fsr402_t *sensor, float measured_voltage_v)
     sample.filtered_voltage_v = sensor->filtered_voltage_v;
     sample.resistance_ohm = fsr402_voltage_to_resistance(&sensor->config,
                                                          sample.filtered_voltage_v);
-    sample.force_g = fsr402_resistance_to_force_g(sample.resistance_ohm);
-    sample.force_n = sample.force_g * FSR402_GRAMS_TO_NEWTONS;
+    sample.force_n = fsr402_resistance_to_force_n(sample.resistance_ohm);
+    sample.force_kgf = sample.force_n / FSR402_NEWTONS_PER_KGF;
 
     if (sample.resistance_ohm > 0.0f && isfinite(sample.resistance_ohm)) {
         // 电导单位使用微西门子：uS = 1,000,000 / 欧姆。
@@ -109,7 +109,7 @@ float fsr402_voltage_to_resistance(const fsr402_config_t *config, float voltage_
     return config->fixed_resistor_ohm * v / (config->supply_voltage_v - v);
 }
 
-float fsr402_resistance_to_force_g(float resistance_ohm)
+float fsr402_resistance_to_force_n(float resistance_ohm)
 {
     if (resistance_ohm <= 0.0f || !isfinite(resistance_ohm)) {
         return 0.0f;

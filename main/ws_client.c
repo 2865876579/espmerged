@@ -74,71 +74,40 @@ static void pump_task(void *arg) {
                 continue;
             }
 
-            /* 阶段一：全速冲到动态读数接近目标 */
-            if (need_inflate) {
-                pump_set_duty(100);
-                if (!pump_start()) { pump_clear_cooldown(); pump_start(); }
-                int to = 300;
-                while (to-- > 0) {
-                    vTaskDelay(pdMS_TO_TICKS(100));
-                    curr = sensor_read_pressure_kpa();
-                    if (curr >= target || curr < 0) break;
-                }
-                pump_stop();
-            } else {
-                valve_open();
-                int to = 300;
-                while (to-- > 0) {
-                    vTaskDelay(pdMS_TO_TICKS(100));
-                    curr = sensor_read_pressure_kpa();
-                    if (curr <= target || curr < 0) break;
-                }
-                valve_close();
-            }
-
-            /* 阶段二：均压验证 + 短促微调（最多 8 轮，每轮 ≤1s） */
-            int retries = 8;
+            /* 动态读数虚高：用 target+1.0kPa 做刹车点，抵消气流误差 */
+            int retries = 15;
             while (retries-- > 0) {
-                vTaskDelay(pdMS_TO_TICKS(300));
-                curr = sensor_read_pressure_kpa();
-                float gap = need_inflate ? (target - curr) : (curr - target);
-                printf("[枕头] 均压 %.2f gap=%.2f", curr, gap);
-
-                if (curr < 0 || gap <= 0.05f) {
-                    printf(" ✓ 达标\n");
-                    break;
-                }
+                float stop_at = need_inflate ? (target + 1.0f) : (target - 1.0f);
 
                 if (need_inflate) {
-                    uint8_t duty = (gap > 0.3f) ? 50 : 25;
-                    int ms = (int)(gap * 500);  // 保守估算
-                    if (ms < 300) ms = 300;
-                    if (ms > 1000) ms = 1000;   // 每轮最多1秒
-                    printf(" → duty=%d%% %dms\n", duty, ms);
-                    pump_clear_cooldown();
-                    pump_set_duty(duty);
-                    pump_start();
-                    int to = ms / 100 + 1;
+                    pump_set_duty(100);
+                    if (!pump_start()) { pump_clear_cooldown(); if(!pump_start()) break; }
+                    int to = 300;
                     while (to-- > 0) {
                         vTaskDelay(pdMS_TO_TICKS(100));
                         curr = sensor_read_pressure_kpa();
-                        if (curr >= target) break;  // 动态读数到目标→提前停
+                        if (curr >= stop_at || curr < 0) break;
                     }
                     pump_stop();
                 } else {
-                    int ms = (int)(gap * 500);
-                    if (ms < 200) ms = 200;
-                    if (ms > 1000) ms = 1000;
-                    printf(" → 泄气 %dms\n", ms);
                     valve_open();
-                    int to = ms / 100 + 1;
+                    int to = 300;
                     while (to-- > 0) {
                         vTaskDelay(pdMS_TO_TICKS(100));
                         curr = sensor_read_pressure_kpa();
-                        if (curr <= target) break;
+                        if (curr <= stop_at || curr < 0) break;
                     }
                     valve_close();
                 }
+
+                /* 均压验证 */
+                vTaskDelay(pdMS_TO_TICKS(300));
+                curr = sensor_read_pressure_kpa();
+                printf("[枕头] 均压 %.2f", curr);
+                bool done = need_inflate ? (curr >= target) : (curr <= target);
+                if (curr < 0 || done) { printf(" ✓\n"); break; }
+                printf(" → 继续\n");
+                pump_clear_cooldown();
             }
             printf("[枕头] 闭环完成: %.2f kPa (目标 %.2f)\n", curr, target);
 
