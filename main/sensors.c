@@ -104,6 +104,7 @@ static bool s_usart_ready;
 /* 最新数据缓存 + 互斥锁 */
 static sensor_data_t s_latest;
 static portMUX_TYPE   s_data_spinlock = portMUX_INITIALIZER_UNLOCKED;
+static TaskHandle_t   s_sensor_task_handle = NULL;
 
 /* ═══════════════════════════════════════════════════════════
  *  辅助函数
@@ -336,6 +337,7 @@ void sensor_task(void *arg)
 {
     (void)arg;
     sensor_data_t data;
+    s_sensor_task_handle = xTaskGetCurrentTaskHandle();
 
     while (1) {
         memset(&data, 0, sizeof(data));
@@ -349,8 +351,16 @@ void sensor_task(void *arg)
         memcpy(&s_latest, &data, sizeof(s_latest));
         portEXIT_CRITICAL(&s_data_spinlock);
 
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        /* 休眠 1s，可被 sensor_request_refresh 唤醒 */
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
     }
+}
+
+void sensor_request_refresh(void)
+{
+    if (!s_sensor_task_handle) return;
+    xTaskNotifyGive(s_sensor_task_handle);
+    vTaskDelay(pdMS_TO_TICKS(150));  /* 等待读取完成 */
 }
 
 void sensor_get_latest(sensor_data_t *out)

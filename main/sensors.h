@@ -72,6 +72,12 @@ void sensor_task(void *arg);
 void sensor_get_latest(sensor_data_t *out);
 
 /**
+ * 请求传感器任务立即刷新一次（阻塞 ~150ms）。
+ * 调用后 sensor_get_latest() 将返回最新数据。
+ */
+void sensor_request_refresh(void);
+
+/**
  * 轮询红外接收（20ms 非阻塞），收到帧时通过 KY-005 转发。
  * 应放在主循环中高频调用（每 50ms）。
  */

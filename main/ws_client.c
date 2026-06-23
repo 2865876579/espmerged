@@ -360,8 +360,9 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     printf("[枕头] LLM指令: %s %ds (排队中)\n", action, dur);
                 }
                 else if (strcmp(type->valuestring, "read_sensors") == 0) {
-                    // ★ LLM 请求传感器数据：读缓存 → 构建 JSON → 回传
+                    // ★ LLM 请求传感器数据：即时刷新 → 读最新数据
                     sensor_data_t sd;
+                    sensor_request_refresh();
                     sensor_get_latest(&sd);
 
                     cJSON *resp = cJSON_CreateObject();
