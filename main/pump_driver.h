@@ -41,6 +41,9 @@ bool pump_start(void);
 /** 关气泵。 */
 void pump_stop(void);
 
+/** 设置气泵 PWM 占空比 0-100（0=停，100=全速）。 */
+void pump_set_duty(uint8_t duty_pct);
+
 /** 开泄气阀放气。 */
 bool valve_open(void);
 

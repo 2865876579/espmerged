@@ -29,16 +29,25 @@ static volatile uint32_t s_tts_chunks_dropped = 0;
 static OpusDecoder *s_decoder = NULL;  // ★ 模块级，避免每次 TTS 懒初始化
 
 // ── 气泵命令（独立 FreeRTOS 任务，不阻塞 audio/websocket）──
-typedef enum { PUMP_NONE, PUMP_TILT, PUMP_RECOVER, PUMP_STOP } pump_cmd_t;
+typedef enum { PUMP_NONE, PUMP_TILT, PUMP_RECOVER, PUMP_STOP,
+               PUMP_TILT_TO_KPA, PUMP_RECOVER_TO_KPA } pump_cmd_t;
 static volatile pump_cmd_t s_pump_cmd = PUMP_NONE;
 static volatile int        s_pump_dur = 0;
+static volatile float      s_pump_target_kpa = 0;
 static TaskHandle_t        s_pump_task = NULL;
+
+// ── 上次泵闭环结果（供 read_sensors 回传）──
+static volatile bool  s_last_pump_done    = false;
+static volatile bool  s_last_pump_inflate = false;
+static volatile float s_last_pump_target  = 0;
+static volatile float s_last_pump_result  = 0;
 
 static void pump_task(void *arg) {
     while (1) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        pump_cmd_t cmd = s_pump_cmd; int dur = s_pump_dur;
-        s_pump_cmd = PUMP_NONE;  // ★ 在 pump_task 里消费后清除
+        pump_cmd_t cmd = s_pump_cmd; int dur = s_pump_dur; float target = s_pump_target_kpa;
+        s_pump_cmd = PUMP_NONE;
+
         if (cmd == PUMP_TILT) {
             printf("[枕头] 充气 %ds\n", dur);
             pump_start(); vTaskDelay(pdMS_TO_TICKS(dur * 1000)); pump_stop();
@@ -48,6 +57,104 @@ static void pump_task(void *arg) {
         } else if (cmd == PUMP_STOP) {
             printf("[枕头] 急停\n");
             emergency_release(); vTaskDelay(pdMS_TO_TICKS(3000)); valve_close();
+        } else if (cmd == PUMP_TILT_TO_KPA || cmd == PUMP_RECOVER_TO_KPA) {
+            // ★ 闭环+PWM比例调速：粗充(100%) → 均压 → 细调(50%/25%)
+            float curr = sensor_read_pressure_kpa();
+            printf("[枕头] 闭环目标 %.2f kPa, 当前 %.2f kPa\n", target, curr);
+
+            if (curr < 0) { printf("[枕头] 传感器故障\n"); continue; }
+
+            bool need_inflate  = (curr < target - 0.05f);
+            bool need_deflate  = (curr > target + 0.05f);
+
+            if (!need_inflate && !need_deflate) {
+                printf("[枕头] 已在目标 (±50Pa)，跳过\n");
+                s_last_pump_target = target; s_last_pump_result = curr;
+                s_last_pump_done = true; s_last_pump_inflate = need_inflate;
+                continue;
+            }
+
+            /* 阶段一：全速冲到动态读数接近目标 */
+            if (need_inflate) {
+                pump_set_duty(100);
+                if (!pump_start()) { pump_clear_cooldown(); pump_start(); }
+                int to = 300;
+                while (to-- > 0) {
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    curr = sensor_read_pressure_kpa();
+                    if (curr >= target || curr < 0) break;
+                }
+                pump_stop();
+            } else {
+                valve_open();
+                int to = 300;
+                while (to-- > 0) {
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    curr = sensor_read_pressure_kpa();
+                    if (curr <= target || curr < 0) break;
+                }
+                valve_close();
+            }
+
+            /* 阶段二：均压验证 + 短促微调（最多 8 轮，每轮 ≤1s） */
+            int retries = 8;
+            while (retries-- > 0) {
+                vTaskDelay(pdMS_TO_TICKS(300));
+                curr = sensor_read_pressure_kpa();
+                float gap = need_inflate ? (target - curr) : (curr - target);
+                printf("[枕头] 均压 %.2f gap=%.2f", curr, gap);
+
+                if (curr < 0 || gap <= 0.05f) {
+                    printf(" ✓ 达标\n");
+                    break;
+                }
+
+                if (need_inflate) {
+                    uint8_t duty = (gap > 0.3f) ? 50 : 25;
+                    int ms = (int)(gap * 500);  // 保守估算
+                    if (ms < 300) ms = 300;
+                    if (ms > 1000) ms = 1000;   // 每轮最多1秒
+                    printf(" → duty=%d%% %dms\n", duty, ms);
+                    pump_clear_cooldown();
+                    pump_set_duty(duty);
+                    pump_start();
+                    int to = ms / 100 + 1;
+                    while (to-- > 0) {
+                        vTaskDelay(pdMS_TO_TICKS(100));
+                        curr = sensor_read_pressure_kpa();
+                        if (curr >= target) break;  // 动态读数到目标→提前停
+                    }
+                    pump_stop();
+                } else {
+                    int ms = (int)(gap * 500);
+                    if (ms < 200) ms = 200;
+                    if (ms > 1000) ms = 1000;
+                    printf(" → 泄气 %dms\n", ms);
+                    valve_open();
+                    int to = ms / 100 + 1;
+                    while (to-- > 0) {
+                        vTaskDelay(pdMS_TO_TICKS(100));
+                        curr = sensor_read_pressure_kpa();
+                        if (curr <= target) break;
+                    }
+                    valve_close();
+                }
+            }
+            printf("[枕头] 闭环完成: %.2f kPa (目标 %.2f)\n", curr, target);
+
+            // ★ 保存结果，供 read_sensors 读取
+            s_last_pump_target  = target;
+            s_last_pump_result  = curr;
+            s_last_pump_inflate = need_inflate;
+            s_last_pump_done    = true;
+
+            // ★ 回执
+            char buf[256];
+            snprintf(buf, sizeof(buf),
+                "{\"type\":\"pump_result\",\"action\":\"%s\","
+                "\"target_kpa\":%.2f,\"result_kpa\":%.2f}",
+                need_inflate ? "tilt_to" : "recover_to", target, curr);
+            ws_client_send_raw(buf);
         }
         printf("[枕头] 完成\n");
     }
@@ -344,20 +451,33 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     }
                 }
                 else if (strcmp(type->valuestring, "pillow_cmd") == 0) {
-                    // ★ LLM 枕头控制：只设置标志，由 audio_player_task 执行（不阻塞 websocket）
                     const char *action = cJSON_GetStringValue(cJSON_GetObjectItem(json, "action"));
-                    int dur = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(json, "duration_sec"));
-                    if (dur < 1) dur = 3;
-                    if (dur > 7) dur = 7;
+                    float target_kpa = (float)cJSON_GetNumberValue(cJSON_GetObjectItem(json, "target_kpa"));
 
-                    if (strcmp(action, "tilt") == 0) {
-                        s_pump_cmd = PUMP_TILT; s_pump_dur = dur;
-                    } else if (strcmp(action, "recover") == 0) {
-                        s_pump_cmd = PUMP_RECOVER; s_pump_dur = dur;
-                    } else if (strcmp(action, "stop") == 0) {
-                        s_pump_cmd = PUMP_STOP; s_pump_dur = 0;
+                    if (target_kpa > 0 && target_kpa < 15.0f) {
+                        // ★ 闭环模式：有目标气压，边充/放边读传感器，到位即停
+                        s_pump_target_kpa = target_kpa;
+                        if (strcmp(action, "tilt") == 0) {
+                            s_pump_cmd = PUMP_TILT_TO_KPA; s_pump_dur = 0;
+                        } else if (strcmp(action, "recover") == 0) {
+                            s_pump_cmd = PUMP_RECOVER_TO_KPA; s_pump_dur = 0;
+                        }
+                        printf("[枕头] LLM闭环: %s to %.2f kPa\n", action, target_kpa);
+                    } else {
+                        // ★ 开环模式：纯时间控制（兼容旧协议）
+                        int dur = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(json, "duration_sec"));
+                        if (dur < 1) dur = 3;
+                        if (dur > 7) dur = 7;
+
+                        if (strcmp(action, "tilt") == 0) {
+                            s_pump_cmd = PUMP_TILT; s_pump_dur = dur;
+                        } else if (strcmp(action, "recover") == 0) {
+                            s_pump_cmd = PUMP_RECOVER; s_pump_dur = dur;
+                        } else if (strcmp(action, "stop") == 0) {
+                            s_pump_cmd = PUMP_STOP; s_pump_dur = 0;
+                        }
+                        printf("[枕头] LLM指令: %s %ds (排队中)\n", action, dur);
                     }
-                    printf("[枕头] LLM指令: %s %ds (排队中)\n", action, dur);
                 }
                 else if (strcmp(type->valuestring, "read_sensors") == 0) {
                     // ★ LLM 请求传感器数据：即时刷新 → 读最新数据
@@ -390,6 +510,15 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     cJSON_AddBoolToObject(data_obj, "env_valid", sd.env_valid);
                     cJSON_AddNumberToObject(data_obj, "light_lux", sd.light_lux);
                     cJSON_AddBoolToObject(data_obj, "light_valid", sd.light_valid);
+                    /* ★ 上次泵闭环结果 */
+                    if (s_last_pump_done) {
+                        cJSON *last = cJSON_CreateObject();
+                        cJSON_AddStringToObject(last, "action",
+                            s_last_pump_inflate ? "tilt_to" : "recover_to");
+                        cJSON_AddNumberToObject(last, "target_kpa", s_last_pump_target);
+                        cJSON_AddNumberToObject(last, "result_kpa", s_last_pump_result);
+                        cJSON_AddItemToObject(data_obj, "last_pump", last);
+                    }
                     cJSON_AddItemToObject(resp, "data", data_obj);
 
                     char *json_str = cJSON_PrintUnformatted(resp);

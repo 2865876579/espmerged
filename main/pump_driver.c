@@ -1,6 +1,7 @@
 #include "pump_driver.h"
 
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -8,50 +9,80 @@
 
 static const char *TAG = "pump";
 
+// ── LEDC PWM 配置（气泵调速） ────────────────────────
+#define LEDC_TIMER          LEDC_TIMER_0
+#define LEDC_MODE           LEDC_LOW_SPEED_MODE
+#define LEDC_PUMP_CHANNEL   LEDC_CHANNEL_0
+#define LEDC_FREQ_HZ        5000
+
 // ── 内部状态 ──────────────────────────────────────────
 static bool     s_pump_running  = false;
 static bool     s_valve_open    = false;
-static int64_t  s_pump_start_us = 0;   // 气泵启动时刻（微秒）
-static int64_t  s_cooldown_until_us = 0; // 冷却期结束时刻
+static int64_t  s_pump_start_us = 0;
+static int64_t  s_cooldown_until_us = 0;
 
 // ── 初始化 ───────────────────────────────────────────
 void pump_driver_init(void)
 {
+    /* 泄气阀：普通 GPIO */
     gpio_config_t io = {
-        .pin_bit_mask = (1ULL << PUMP_PIN) | (1ULL << VALVE_PIN),
+        .pin_bit_mask = (1ULL << VALVE_PIN),
         .mode         = GPIO_MODE_OUTPUT,
         .pull_up_en   = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type    = GPIO_INTR_DISABLE,
     };
     gpio_config(&io);
-
-    // 上电默认关
-    gpio_set_level(PUMP_PIN, 0);
     gpio_set_level(VALVE_PIN, 0);
 
-    ESP_LOGI(TAG, "driver init OK  pump=GPIO%d  valve=GPIO%d", PUMP_PIN, VALVE_PIN);
+    /* 气泵：LEDC PWM 调速 */
+    ledc_timer_config_t ledc_timer = {
+        .speed_mode       = LEDC_MODE,
+        .duty_resolution  = LEDC_TIMER_8_BIT,
+        .timer_num        = LEDC_TIMER,
+        .freq_hz          = LEDC_FREQ_HZ,
+        .clk_cfg          = LEDC_AUTO_CLK,
+    };
+    ledc_timer_config(&ledc_timer);
+
+    ledc_channel_config_t ledc_channel = {
+        .gpio_num       = PUMP_PIN,
+        .speed_mode     = LEDC_MODE,
+        .channel        = LEDC_PUMP_CHANNEL,
+        .timer_sel      = LEDC_TIMER,
+        .duty           = 0,
+        .hpoint         = 0,
+    };
+    ledc_channel_config(&ledc_channel);
+
+    ESP_LOGI(TAG, "driver init OK  pump=GPIO%d(PWM)  valve=GPIO%d", PUMP_PIN, VALVE_PIN);
 }
 
-// ── 气泵 ─────────────────────────────────────────────
+// ── 气泵 PWM ─────────────────────────────────────────
+void pump_set_duty(uint8_t duty_pct)
+{
+    if (duty_pct > 100) duty_pct = 100;
+    uint32_t duty = (uint32_t)duty_pct * 255 / 100;
+    ledc_set_duty(LEDC_MODE, LEDC_PUMP_CHANNEL, duty);
+    ledc_update_duty(LEDC_MODE, LEDC_PUMP_CHANNEL);
+}
+
 bool pump_start(void)
 {
     if (s_pump_running) return true;
 
-    // ★ 安全：冷却期未过，拒绝启动
     int64_t now = esp_timer_get_time();
     if (now < s_cooldown_until_us) {
         ESP_LOGW(TAG, "pump cooldown — wait %lld ms", (s_cooldown_until_us - now) / 1000);
         return false;
     }
 
-    // ★ 安全：先关阀才能充气
     if (s_valve_open) {
         gpio_set_level(VALVE_PIN, 0);
         s_valve_open = false;
     }
 
-    gpio_set_level(PUMP_PIN, 1);
+    pump_set_duty(100);  // 默认全速
     s_pump_running  = true;
     s_pump_start_us = now;
     ESP_LOGI(TAG, "pump START");
@@ -62,7 +93,7 @@ void pump_stop(void)
 {
     if (!s_pump_running) return;
 
-    gpio_set_level(PUMP_PIN, 0);
+    pump_set_duty(0);
     s_pump_running  = false;
     s_cooldown_until_us = esp_timer_get_time() + PUMP_COOLDOWN_MS * 1000LL;
     ESP_LOGI(TAG, "pump STOP  run=%lldms  cooldown=%dms",

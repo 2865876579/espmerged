@@ -105,6 +105,7 @@ static bool s_usart_ready;
 static sensor_data_t s_latest;
 static portMUX_TYPE   s_data_spinlock = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t   s_sensor_task_handle = NULL;
+static SemaphoreHandle_t s_i2c0_mutex = NULL;  /* MCP5010DP I2C0 互斥 */
 
 /* ═══════════════════════════════════════════════════════════
  *  辅助函数
@@ -182,12 +183,15 @@ static void calibrate_fsr_zero(void)
 static void read_mcp5010dp(sensor_data_t *out)
 {
     out->pressure_valid = false;
-    if (!s_mcp_ads_ready) return;
+    if (!s_mcp_ads_ready || !s_i2c0_mutex) return;
 
+    if (xSemaphoreTake(s_i2c0_mutex, pdMS_TO_TICKS(200)) != pdTRUE) return;
     int16_t raw;
     float adc_v;
-    if (read_ads_voltage(&s_mcp_ads, ADS1115_MUX_AIN0_GND, &raw, &adc_v) != ESP_OK)
-        return;
+    esp_err_t err = read_ads_voltage(&s_mcp_ads, ADS1115_MUX_AIN0_GND, &raw, &adc_v);
+    xSemaphoreGive(s_i2c0_mutex);
+
+    if (err != ESP_OK) return;
     float sensor_v = mcp_adc_to_sensor_voltage(adc_v);
     float kpa = mcp_voltage_to_pressure_kpa(sensor_v);
     out->pressure_kpa = kpa;
@@ -277,6 +281,9 @@ void init_sensors(void)
 {
     ESP_LOGI(TAG, "========== Sensor Init Start ==========");
 
+    /* I2C0 互斥锁：防 pump_task / sensor_task / LLM read_sensors 抢 ADS1115 */
+    s_i2c0_mutex = xSemaphoreCreateMutex();
+
     /* FSR 软件模型 */
     init_fsr_models();
 
@@ -361,6 +368,21 @@ void sensor_request_refresh(void)
     if (!s_sensor_task_handle) return;
     xTaskNotifyGive(s_sensor_task_handle);
     vTaskDelay(pdMS_TO_TICKS(150));  /* 等待读取完成 */
+}
+
+float sensor_read_pressure_kpa(void)
+{
+    if (!s_mcp_ads_ready || !s_i2c0_mutex) return -1.0f;
+    if (xSemaphoreTake(s_i2c0_mutex, pdMS_TO_TICKS(200)) != pdTRUE)
+        return -1.0f;
+    int16_t raw;
+    float adc_v;
+    esp_err_t err = read_ads_voltage(&s_mcp_ads, ADS1115_MUX_AIN0_GND, &raw, &adc_v);
+    xSemaphoreGive(s_i2c0_mutex);
+    if (err != ESP_OK) return -1.0f;
+    float kpa = mcp_voltage_to_pressure_kpa(mcp_adc_to_sensor_voltage(adc_v));
+    if (s_usart_ready) usart_tjc_set_t7_pressure_kpa(kpa);
+    return kpa;
 }
 
 void sensor_get_latest(sensor_data_t *out)

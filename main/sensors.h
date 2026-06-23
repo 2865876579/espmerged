@@ -72,6 +72,12 @@ void sensor_task(void *arg);
 void sensor_get_latest(sensor_data_t *out);
 
 /**
+ * 直接读取 MCP5010DP 气压值（不经过缓存，单次 I2C）。
+ * 返回 kPa，失败返回 -1.0。用于泵闭环控制的即时反馈。
+ */
+float sensor_read_pressure_kpa(void);
+
+/**
  * 请求传感器任务立即刷新一次（阻塞 ~150ms）。
  * 调用后 sensor_get_latest() 将返回最新数据。
  */
