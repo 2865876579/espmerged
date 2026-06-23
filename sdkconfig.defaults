@@ -1,0 +1,28 @@
+# ===== Chip / Flash / PSRAM =====
+CONFIG_IDF_TARGET="esp32s3"
+
+# N16R8: 16MB Flash
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# N16R8: 8MB PSRAM (Octal SPI), needed for audio buffers
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# ===== Partition table: custom with model partition =====
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# ===== Main task stack =====
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+
+# ===== Timer task stack（泵定时器回调需要更大栈）=====
+CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096
+
+# ===== Log level =====
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# ===== ESP-SR: WakeNet9 NIHAOXIAOAN_TTS2 =====
+CONFIG_SR_WN_WN9_NIHAOXIAOAN_TTS2=y

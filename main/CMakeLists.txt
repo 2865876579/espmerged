@@ -1,0 +1,24 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "wifi.c"
+        "audio_out.c"
+        "audio_in.c"
+        "ws_client.c"
+        "afe_wake_word.c"
+        "pump_driver.c"
+        "sensors.c"
+    INCLUDE_DIRS "."
+    REQUIRES
+        esp_wifi
+        esp_event
+        esp_netif
+        nvs_flash
+        driver
+        esp_adc
+        esp_websocket_client
+        cjson
+        mbedtls
+        esp-sr
+        sensors
+)
