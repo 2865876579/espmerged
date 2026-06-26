@@ -3,460 +3,431 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>小安 XiaoAn · 智能睡眠</title>
+<title>小安 · 智能睡眠伴侣</title>
 <style>
-:root {
-  --ink:#05070f; --ink2:#0b0f1c; --card:#111623; --card2:#181e2f;
-  --b:#1e2740; --b2:#283455; --t:#edf0f8; --t2:#99a5c0; --t3:#566080;
-  --p:#6c8cff; --pg:rgba(108,140,255,.18); --g:#4ade80; --a:#fbbf24;
-  --r:#f87171; --pk:#f472b6;
+:root{
+  --b0:#03050b; --b1:#070a15; --b2:#0c1020; --b3:#13182c;
+  --t0:#f4f5fb; --t1:#c8cdde; --t2:#7c84a3; --t3:#4a5070;
+  --ac:#7b93f7; --ac2:#5b6fe6; --acg:rgba(123,147,247,.2);
+  --gr:#5ee8a4; --ye:#f5c542; --pk:#f284b6;
 }
 *{margin:0;padding:0;box-sizing:border-box}
-html{scroll-behavior:smooth;scrollbar-width:thin;scrollbar-color:var(--b) transparent}
+html{scroll-behavior:smooth}
 body{
   font-family:'Inter',-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;
-  background:var(--ink);color:var(--t);-webkit-font-smoothing:antialiased;
-  overflow-x:hidden;cursor:default
+  background:var(--b0);color:var(--t0);-webkit-font-smoothing:antialiased;
+  overflow-x:hidden;line-height:1.6
 }
-::-webkit-scrollbar{width:5px}
+::-webkit-scrollbar{width:4px}
 ::-webkit-scrollbar-track{background:transparent}
-::-webkit-scrollbar-thumb{background:var(--b);border-radius:10px}
+::-webkit-scrollbar-thumb{background:var(--b3);border-radius:10px}
 
-/* ════════ MOUSE GLOW ════════ */
-.cursor-glow{
-  position:fixed;pointer-events:none;z-index:999;
-  width:600px;height:600px;border-radius:50%;
-  background:radial-gradient(circle,rgba(108,140,255,.04),transparent 60%);
-  transform:translate(-50%,-50%);transition:opacity .6s;
+/* ═══════════════ SCROLL PROGRESS ═══════════════ */
+.scroll-bar{
+  position:fixed;top:0;left:0;height:2px;background:var(--ac);
+  z-index:999;transition:width .1s linear
 }
-/* ════════ NAV ════════ */
+
+/* ═══════════════ NOISE OVERLAY ═══════════════ */
+.noise{
+  position:fixed;inset:0;pointer-events:none;z-index:998;opacity:.015;
+  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ═══════════════ NAV ═══════════════ */
 .nav{
-  position:fixed;top:0;left:0;right:0;z-index:100;padding:16px 40px;
-  display:flex;align-items:center;justify-content:space-between;
-  backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
-  background:rgba(5,7,15,.65);border-bottom:1px solid rgba(255,255,255,.04);
-  transition:all .3s;
+  position:fixed;top:0;left:0;right:0;z-index:100;
+  padding:14px 48px;display:flex;align-items:center;justify-content:space-between;
+  mix-blend-mode:difference;
 }
-.nav-l{display:flex;align-items:center;gap:12px}
-.nav-icon{
-  width:36px;height:36px;border-radius:10px;
-  background:linear-gradient(135deg,#6c8cff,#a78bfa);
-  display:flex;align-items:center;justify-content:center;font-size:19px;
-  box-shadow:0 6px 24px rgba(108,140,255,.3);
+.nav-logo{display:flex;align-items:center;gap:10px}
+.nav-logo .icon{
+  width:32px;height:32px;border-radius:8px;background:var(--ac);
+  display:flex;align-items:center;justify-content:center;font-size:16px;
 }
-.nav-name{font-size:17px;font-weight:700;letter-spacing:-.4px}
-.nav-r{display:flex;gap:28px;align-items:center}
-.nav-r a{font-size:13px;color:var(--t2);text-decoration:none;font-weight:500;transition:color .2s}
-.nav-r a:hover{color:var(--t)}
+.nav-logo span{font-size:15px;font-weight:700;letter-spacing:-.3px;color:#fff}
 .nav-cta{
-  padding:9px 22px;border-radius:22px;font-size:13px;font-weight:700;
-  background:rgba(255,255,255,.06);color:var(--t);border:1px solid rgba(255,255,255,.08);
-  cursor:pointer;font-family:inherit;transition:all .3s;
+  padding:8px 22px;border-radius:20px;font-size:12px;font-weight:600;
+  background:rgba(255,255,255,.1);color:#fff;border:1px solid rgba(255,255,255,.15);
+  cursor:pointer;font-family:inherit;transition:all .3s;backdrop-filter:blur(10px)
 }
-.nav-cta:hover{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.15)}
+.nav-cta:hover{background:rgba(255,255,255,.18)}
 
-/* ════════ SECTIONS ════════ */
-.sec{padding:120px 24px;position:relative;z-index:1}
-
-/* ════════ HERO ════════ */
+/* ═══════════════ HERO ═══════════════ */
 .hero{
-  min-height:100vh;display:flex;align-items:center;justify-content:center;
-  text-align:center;flex-direction:column;position:relative;overflow:hidden;
-}
-.hero::before{
-  content:'';position:absolute;inset:0;
-  background:radial-gradient(ellipse 60% 50% at 50% 30%,rgba(108,140,255,.06),transparent),
-             radial-gradient(ellipse 40% 40% at 80% 70%,rgba(244,114,182,.04),transparent);
-}
-.hero-badge{
-  display:inline-flex;align-items:center;gap:7px;padding:7px 18px;
-  border-radius:24px;font-size:12px;font-weight:600;margin-bottom:32px;
-  background:rgba(108,140,255,.07);border:1px solid rgba(108,140,255,.12);
-  color:#92a6ff;position:relative;z-index:1;
-}
-.hero-badge .live{width:6px;height:6px;border-radius:50%;background:var(--g);box-shadow:0 0 10px rgba(74,222,128,.6);animation:livePulse 2s infinite}
-@keyframes livePulse{0%,100%{opacity:1}50%{opacity:.25}}
-.hero h1{
-  font-size:clamp(42px,8vw,76px);font-weight:900;letter-spacing:-2px;
-  line-height:1.08;position:relative;z-index:1;margin-bottom:24px;
-  background:linear-gradient(180deg,#fff 20%,#92a6ff 100%);
-  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
-}
-.hero p{
-  font-size:17px;color:var(--t2);line-height:1.7;max-width:540px;
-  position:relative;z-index:1;margin-bottom:40px;
-}
-.hero-btns{display:flex;gap:14px;position:relative;z-index:1}
-.btn{
-  padding:16px 34px;border-radius:16px;font-size:15px;font-weight:700;
-  border:none;cursor:pointer;font-family:inherit;letter-spacing:-.2px;
-  transition:all .35s cubic-bezier(.22,.61,.36,1);
-}
-.btn-p{
-  background:var(--p);color:#fff;box-shadow:0 8px 32px rgba(108,140,255,.3),0 0 0 1px rgba(108,140,255,.15) inset;
-}
-.btn-p:hover{transform:translateY(-3px);box-shadow:0 16px 42px rgba(108,140,255,.4);filter:brightness(1.06)}
-.btn-s{
-  background:rgba(255,255,255,.03);color:var(--t);border:1px solid rgba(255,255,255,.08);
-}
-.btn-s:hover{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.14)}
-
-/* ════════ FLOATING PILL ════════ */
-.float-pill{
-  position:absolute;border-radius:50%;filter:blur(100px);opacity:.06;
-  pointer-events:none;animation:floatPill 12s ease-in-out infinite;
-}
-.float-pill.p1{width:500px;height:500px;background:var(--p);top:10%;left:-10%;animation-delay:0s}
-.float-pill.p2{width:350px;height:350px;background:var(--pk);bottom:5%;right:-5%;animation-delay:-6s}
-@keyframes floatPill{0%,100%{transform:translate(0,0) scale(1)}33%{transform:translate(40px,-30px) scale(1.1)}66%{transform:translate(-20px,20px) scale(.9)}}
-
-/* ════════ FEATURES GRID ════════ */
-.feat-grid{
-  display:grid;grid-template-columns:repeat(4,1fr);gap:16px;
-  max-width:1100px;margin:0 auto;position:relative;z-index:1;
-}
-.feat-card{
-  background:var(--card);border:1px solid var(--b);border-radius:24px;
-  padding:32px 24px;text-align:center;transition:all .4s;
+  min-height:100vh;display:flex;align-items:center;padding:120px 80px 80px;
   position:relative;overflow:hidden;
 }
-.feat-card::before{
-  content:'';position:absolute;inset:0;opacity:0;transition:opacity .4s;
-  background:radial-gradient(600px circle at var(--mx) var(--my),rgba(108,140,255,.06),transparent 40%);
+.hero-l{flex:1;position:relative;z-index:2}
+.hero-r{flex:1;position:relative;z-index:1;display:flex;align-items:center;justify-content:center}
+.hero .tag{
+  display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;
+  color:var(--ac);letter-spacing:1px;text-transform:uppercase;margin-bottom:32px
 }
-.feat-card:hover::before{opacity:1}
-.feat-card:hover{transform:translateY(-6px);border-color:var(--b2);box-shadow:0 20px 50px rgba(0,0,0,.3)}
-.feat-icon{
-  width:56px;height:56px;border-radius:16px;display:inline-flex;
-  align-items:center;justify-content:center;font-size:26px;margin-bottom:18px;
-  position:relative;z-index:1;
+.hero .tag::before{content:'';width:20px;height:1px;background:var(--ac)}
+.hero h1{
+  font-size:clamp(48px,7vw,80px);font-weight:800;letter-spacing:-2.5px;
+  line-height:1.04;margin-bottom:28px
 }
-.feat-card:nth-child(1) .feat-icon{background:rgba(108,140,255,.12)}
-.feat-card:nth-child(2) .feat-icon{background:rgba(74,222,128,.1)}
-.feat-card:nth-child(3) .feat-icon{background:rgba(251,191,36,.1)}
-.feat-card:nth-child(4) .feat-icon{background:rgba(244,114,182,.1)}
-.feat-title{font-size:15px;font-weight:700;margin-bottom:6px;position:relative;z-index:1}
-.feat-desc{font-size:12px;color:var(--t2);line-height:1.6;position:relative;z-index:1}
+.hero h1 .hl{color:var(--ac)}
+.hero h1 .dim{color:var(--t3)}
+.hero .desc{font-size:16px;color:var(--t2);max-width:440px;margin-bottom:44px;line-height:1.7}
+.hero-btns{display:flex;gap:12px}
+.btn{
+  padding:14px 32px;border-radius:12px;font-size:14px;font-weight:600;
+  border:none;cursor:pointer;font-family:inherit;transition:all .35s
+}
+.btn-f{background:var(--ac);color:#fff}
+.btn-f:hover{background:var(--ac2);transform:translateY(-2px)}
+.btn-o{background:transparent;color:var(--t1);border:1px solid var(--b3)}
+.btn-o:hover{border-color:var(--t3);color:var(--t0)}
 
-/* ════════ STAT LINE ════════ */
-.stat-line{
-  display:flex;gap:60px;justify-content:center;padding:60px 0;
-  border-top:1px solid rgba(255,255,255,.03);border-bottom:1px solid rgba(255,255,255,.03);
-  max-width:800px;margin:0 auto;position:relative;z-index:1;
+/* Hero right — abstract shape */
+.hero-shape{
+  width:420px;height:420px;position:relative
 }
-.stat h3{font-size:36px;font-weight:900;letter-spacing:-1px;background:linear-gradient(135deg,var(--t),var(--t2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-.stat p{font-size:12px;color:var(--t3);margin-top:4px}
+.hero-shape .ring{
+  position:absolute;border-radius:50%;border:1px solid rgba(255,255,255,.06)
+}
+.hero-shape .ring.r1{width:100%;height:100%;top:0;left:0;animation:spin 30s linear infinite}
+.hero-shape .ring.r2{width:72%;height:72%;top:14%;left:14%;animation:spin 22s linear infinite reverse}
+.hero-shape .ring.r3{width:44%;height:44%;top:28%;left:28%;animation:spin 16s linear infinite}
+.hero-shape .core{
+  position:absolute;width:20%;height:20%;top:40%;left:40%;
+  border-radius:50%;background:radial-gradient(circle,var(--ac),transparent 70%);
+  animation:pulse 3s ease-in-out infinite
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{0%,100%{transform:scale(1);opacity:.6}50%{transform:scale(1.3);opacity:1}}
 
-/* ════════ WIZARD ════════ */
-.wiz-wrap{max-width:760px;margin:0 auto;position:relative;z-index:1}
-.wiz-label{text-align:center;font-size:11px;color:var(--p);font-weight:700;text-transform:uppercase;letter-spacing:2px;margin-bottom:10px}
-.wiz-title{text-align:center;font-size:30px;font-weight:800;letter-spacing:-.5px;margin-bottom:6px}
-.wiz-sub{text-align:center;font-size:14px;color:var(--t2);margin-bottom:48px}
+/* ═══════════════ QUOTE STRIP ═══════════════ */
+.quote{
+  text-align:center;padding:100px 24px;border-top:1px solid rgba(255,255,255,.03);
+  border-bottom:1px solid rgba(255,255,255,.03)
+}
+.quote p{font-size:22px;color:var(--t2);font-style:italic;max-width:640px;margin:0 auto;line-height:1.6}
+.quote p b{color:var(--t0);font-weight:700}
+
+/* ═══════════════ FEATURES — MASONRY ═══════════════ */
+.feat-sec{max-width:1100px;margin:0 auto;padding:100px 24px}
+.feat-sec .sec-num{font-size:11px;color:var(--ac);letter-spacing:1px;font-weight:600;margin-bottom:8px}
+.feat-sec .sec-title{font-size:32px;font-weight:700;letter-spacing:-.8px;margin-bottom:56px}
+.feat-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.feat-card{
+  background:var(--b1);border:1px solid var(--b3);border-radius:20px;
+  padding:36px;transition:all .4s;position:relative;overflow:hidden;
+  display:flex;gap:24px;align-items:flex-start
+}
+.feat-card:hover{border-color:rgba(123,147,247,.25);background:var(--b2)}
+.feat-card:nth-child(1){grid-row:span 2}
+.feat-card .fi{
+  width:48px;height:48px;border-radius:14px;display:flex;align-items:center;
+  justify-content:center;font-size:22px;flex-shrink:0
+}
+.feat-card .fi.f1{background:rgba(123,147,247,.12)}
+.feat-card .fi.f2{background:rgba(94,232,164,.1)}
+.feat-card .fi.f3{background:rgba(245,197,66,.1)}
+.feat-card .fi.f4{background:rgba(242,132,182,.1)}
+.feat-card .ft{font-size:15px;font-weight:700;margin-bottom:6px}
+.feat-card .fd{font-size:13px;color:var(--t2);line-height:1.6}
+
+/* ═══════════════ WIZARD ═══════════════ */
+.wiz-sec{max-width:760px;margin:0 auto;padding:60px 24px 120px}
+.wiz-sec .sec-num{font-size:11px;color:var(--gr);letter-spacing:1px;font-weight:600;margin-bottom:8px}
+.wiz-sec .sec-title{font-size:32px;font-weight:700;letter-spacing:-.8px;margin-bottom:48px}
 .wiz{
-  background:var(--card);border:1px solid var(--b);border-radius:24px;
-  overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.3);
+  background:var(--b1);border:1px solid var(--b3);border-radius:20px;overflow:hidden
 }
-.wiz-head{
-  display:flex;align-items:center;padding:18px 32px;
-  border-bottom:1px solid var(--b);gap:0;
+.wiz-top{
+  display:flex;padding:0;border-bottom:1px solid var(--b3)
 }
-.ws{
-  display:flex;align-items:center;gap:8px;font-size:12px;
-  color:var(--t3);font-weight:500;flex:1;justify-content:center;
+.wiz-top .wt{
+  flex:1;text-align:center;padding:16px 8px;font-size:12px;color:var(--t3);
+  font-weight:500;cursor:default;position:relative;transition:all .4s
 }
-.ws .n{
-  width:26px;height:26px;border-radius:50%;display:flex;align-items:center;
-  justify-content:center;font-size:11px;font-weight:700;background:var(--b);color:var(--t3);transition:all .4s
+.wiz-top .wt::after{
+  content:'';position:absolute;bottom:0;left:50%;transform:translateX(-50%);
+  width:0;height:2px;background:var(--ac);transition:all .4s
 }
-.ws.done .n{background:var(--p);color:#fff}
-.ws.cur .n{background:var(--p);color:#fff;box-shadow:0 0 18px var(--pg)}
-.ws .line{flex:1;height:1px;background:var(--b);min-width:30px}
-.ws.done .line{background:var(--p);opacity:.25}
+.wiz-top .wt.done{color:var(--ac)}
+.wiz-top .wt.done::after{width:100%}
+.wiz-top .wt.cur{color:var(--ac);font-weight:700}
+.wiz-top .wt.cur::after{width:60%}
 
-.wiz-body{padding:40px 48px;min-height:340px}
-.wb{display:none;animation:wbIn .5s ease-out}
-.wb.on{display:block}
-@keyframes wbIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
-.wb h3{font-size:21px;font-weight:700;margin-bottom:4px;letter-spacing:-.4px}
-.wb .sub{font-size:13px;color:var(--t2);margin-bottom:30px}
+.wiz-body{padding:48px 56px;min-height:360px}
+.ws{display:none;animation:wsIn .5s ease-out}
+.ws.on{display:block}
+@keyframes wsIn{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+.ws h3{font-size:20px;font-weight:700;margin-bottom:6px}
+.ws .sub{font-size:13px;color:var(--t2);margin-bottom:32px}
 
-.fd{margin-bottom:22px}
-.fd label{display:block;font-size:11px;color:var(--t3);font-weight:600;text-transform:uppercase;letter-spacing:.6px;margin-bottom:7px}
-.tm{display:flex;align-items:center;gap:10px}
-.tm input[type=time]{
-  background:var(--card2);border:1px solid var(--b);color:var(--t);
-  padding:11px 14px;border-radius:10px;font-size:15px;font-family:inherit;
+.ff{margin-bottom:24px}
+.ff>label{display:block;font-size:10px;color:var(--t3);font-weight:700;text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px}
+.tr{display:flex;align-items:center;gap:10px}
+.tr input[type=time]{
+  background:var(--b2);border:1px solid var(--b3);color:var(--t0);
+  padding:10px 14px;border-radius:10px;font-size:15px;font-family:inherit;
   width:110px;text-align:center;font-weight:600;outline:none;transition:all .2s
 }
-.tm input[type=time]:focus{border-color:var(--p);box-shadow:0 0 0 3px var(--pg)}
-.tm .arr{color:var(--t3);font-weight:300}
-.sel-w{position:relative}
-.sel-w select{
-  width:100%;background:var(--card2);border:1px solid var(--b);color:var(--t);
-  font-size:14px;padding:12px 38px 12px 14px;border-radius:10px;
+.tr input[type=time]:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--acg)}
+.tr .arw{color:var(--t3)}
+.sel-wr{position:relative}
+.sel-wr select{
+  width:100%;background:var(--b2);border:1px solid var(--b3);color:var(--t0);
+  font-size:14px;padding:11px 38px 11px 14px;border-radius:10px;
   outline:none;font-family:inherit;appearance:none;cursor:pointer;font-weight:500;transition:all .2s
 }
-.sel-w select:focus{border-color:var(--p);box-shadow:0 0 0 3px var(--pg)}
-.sel-w::after{content:'';position:absolute;right:14px;top:50%;transform:translateY(-50%);border:5px solid transparent;border-top:6px solid var(--t3);pointer-events:none}
+.sel-wr select:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--acg)}
+.sel-wr::after{content:'';position:absolute;right:14px;top:50%;transform:translateY(-50%);border:5px solid transparent;border-top:6px solid var(--t3);pointer-events:none}
 
-.pl2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.plo{
-  background:var(--card2);border:1.5px solid var(--b);border-radius:14px;
-  padding:24px 20px;cursor:pointer;text-align:center;transition:all .3s;position:relative
+.p2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.po{
+  background:var(--b2);border:1.5px solid var(--b3);border-radius:14px;
+  padding:24px;cursor:pointer;text-align:center;transition:all .3s;position:relative
 }
-.plo:hover{border-color:var(--b2)}
-.plo.sel{border-color:var(--p);background:rgba(108,140,255,.04)}
-.plo .ck{
-  position:absolute;top:10px;right:12px;width:22px;height:22px;
-  border-radius:50%;background:var(--p);color:#fff;display:flex;
-  align-items:center;justify-content:center;font-size:11px;
-  opacity:0;transform:scale(.5);transition:all .35s
+.po:hover{border-color:rgba(123,147,247,.3)}
+.po.sel{border-color:var(--ac);background:rgba(123,147,247,.04)}
+.po .ck{
+  position:absolute;top:10px;right:12px;width:20px;height:20px;
+  border-radius:50%;background:var(--ac);color:#fff;display:flex;
+  align-items:center;justify-content:center;font-size:10px;
+  opacity:0;transform:scale(.4);transition:all .35s
 }
-.plo.sel .ck{opacity:1;transform:scale(1)}
-.plo .em{font-size:34px;margin-bottom:8px}
-.plo .nm{font-size:15px;font-weight:700;margin-bottom:3px}
-.plo .ds{font-size:11px;color:var(--t2);line-height:1.5}
-.plo input{display:none}
+.po.sel .ck{opacity:1;transform:scale(1)}
+.po .em{font-size:30px;margin-bottom:8px}
+.po .pn{font-size:14px;font-weight:700;margin-bottom:3px}
+.po .pd{font-size:11px;color:var(--t2);line-height:1.5}
+.po input{display:none}
 
 .tgl{
   display:flex;align-items:center;justify-content:space-between;
-  padding:13px 16px;background:var(--card2);border-radius:10px;margin-bottom:8px
+  padding:12px 16px;background:var(--b2);border-radius:10px;margin-bottom:8px
 }
-.tgl-info{flex:1}
-.tgl-info .tl{font-size:14px;font-weight:600}
-.tgl-info .td{font-size:11px;color:var(--t3);margin-top:2px}
-.sw{
-  width:46px;height:26px;border-radius:13px;background:var(--b);
+.tgl-l{flex:1}.tgl-l .tl{font-size:13px;font-weight:600}.tgl-l .td{font-size:11px;color:var(--t3);margin-top:2px}
+.ts{
+  width:44px;height:24px;border-radius:12px;background:var(--b3);
   cursor:pointer;flex-shrink:0;position:relative;transition:background .3s
 }
-.sw.on{background:var(--p)}
-.sw::after{
-  content:'';position:absolute;top:2px;left:2px;width:22px;height:22px;
-  border-radius:50%;background:#fff;transition:transform .35s cubic-bezier(.22,.61,.36,1);
-  box-shadow:0 2px 6px rgba(0,0,0,.2)
-}
-.sw.on::after{transform:translateX(20px)}
+.ts.on{background:var(--ac)}
+.ts::after{content:'';position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;transition:transform .35s cubic-bezier(.22,.61,.36,1);box-shadow:0 2px 4px rgba(0,0,0,.2)}
+.ts.on::after{transform:translateX(20px)}
 
-.chips{display:flex;gap:8px;flex-wrap:wrap}
-.chip{
-  padding:10px 16px;border-radius:20px;font-size:12px;background:var(--card2);
-  border:1px solid var(--b);color:var(--t2);font-family:'SF Mono','Fira Code',monospace;
-  display:flex;align-items:center;gap:5px
+.ch{display:flex;gap:8px}.ch span{
+  padding:10px 16px;border-radius:20px;font-size:12px;background:var(--b2);
+  border:1px solid var(--b3);color:var(--t2);font-family:'SF Mono','Fira Code',monospace
 }
 
-.g-h{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
-.g-v{font-size:26px;font-weight:900;letter-spacing:-.5px}
-.g-u{font-size:12px;color:var(--t3);margin-left:3px}
-.g-tr{
-  height:8px;border-radius:4px;background:var(--card2);position:relative;
-  cursor:pointer;overflow:visible
+.gh{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+.gv{font-size:28px;font-weight:800}.gu{font-size:12px;color:var(--t3);margin-left:4px}
+.gb{height:8px;border-radius:4px;background:var(--b2);position:relative;cursor:pointer}
+.gf{height:100%;border-radius:4px;transition:width .3s;background:linear-gradient(90deg,var(--gr),var(--ye) 55%,var(--pk))}
+.gth{
+  position:absolute;top:50%;transform:translate(-50%,-50%);width:22px;height:22px;
+  border-radius:50%;background:#fff;border:3px solid var(--ac);
+  box-shadow:0 3px 14px rgba(0,0,0,.5);cursor:grab;transition:left .3s;z-index:2
 }
-.g-f{
-  height:100%;border-radius:4px;transition:width .3s;
-  background:linear-gradient(90deg,var(--g),var(--a) 55%,var(--r))
-}
-.g-tb{
-  position:absolute;top:50%;transform:translate(-50%,-50%);
-  width:22px;height:22px;border-radius:50%;background:#fff;
-  border:3px solid var(--p);box-shadow:0 3px 14px rgba(0,0,0,.5);
-  cursor:grab;transition:left .3s;z-index:2
-}
-.g-tk{display:flex;justify-content:space-between;font-size:10px;color:var(--t3);margin-top:5px}
+.gtk{display:flex;justify-content:space-between;font-size:10px;color:var(--t3);margin-top:6px}
 
-.summ{
-  display:grid;grid-template-columns:1fr 1fr;gap:10px;
-  background:var(--card2);border-radius:14px;padding:22px
-}
-.summ .sr{display:flex;justify-content:space-between;font-size:13px;padding:3px 0}
-.summ .sr .sk{color:var(--t3)}
-.summ .sr .sv{color:var(--t);font-weight:600}
+.sg{display:grid;grid-template-columns:1fr 1fr;gap:8px;background:var(--b2);border-radius:14px;padding:22px}
+.sg .sr{display:flex;justify-content:space-between;font-size:13px;padding:3px 0}
+.sg .sr .sk{color:var(--t3)}.sg .sr .sv{font-weight:600}
 
-.wiz-foot{padding:18px 48px;border-top:1px solid var(--b);display:flex;gap:12px}
-.wf-b{
-  width:46px;height:46px;border-radius:12px;background:transparent;
-  border:1px solid var(--b);color:var(--t2);cursor:pointer;font-size:18px;
+.wiz-foot{padding:18px 56px;border-top:1px solid var(--b3);display:flex;gap:12px}
+.wfb{
+  width:44px;height:44px;border-radius:12px;background:transparent;
+  border:1px solid var(--b3);color:var(--t2);cursor:pointer;font-size:18px;
   display:flex;align-items:center;justify-content:center;transition:all .2s
 }
-.wf-b:hover{border-color:var(--b2);color:var(--t)}
-.wf-n{
-  flex:1;height:46px;border-radius:12px;background:var(--p);color:#fff;
-  border:none;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;
-  transition:all .25s;box-shadow:0 6px 22px rgba(108,140,255,.2)
+.wfb:hover{border-color:var(--t3);color:var(--t0)}
+.wfn{
+  flex:1;height:44px;border-radius:12px;background:var(--ac);color:#fff;
+  border:none;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;transition:all .25s
 }
-.wf-n:hover{filter:brightness(1.08);transform:translateY(-1px)}
+.wfn:hover{filter:brightness(1.08);transform:translateY(-1px)}
 
-/* ════════ SUCCESS ════════ */
-.ov{
-  position:fixed;inset:0;z-index:300;display:none;
-  background:rgba(5,7,15,.94);backdrop-filter:blur(14px);
+/* ═══════════════ SUCCESS ═══════════════ */
+.ovl{
+  position:fixed;inset:0;z-index:500;display:none;
+  background:rgba(3,5,11,.95);backdrop-filter:blur(16px);
   align-items:center;justify-content:center;flex-direction:column
 }
-.ov.on{display:flex}
-.ov-ic{
-  width:90px;height:90px;border-radius:50%;
-  background:linear-gradient(135deg,rgba(74,222,128,.15),rgba(74,222,128,.04));
-  display:flex;align-items:center;justify-content:center;font-size:46px;
-  margin-bottom:28px;animation:ovPop .7s cubic-bezier(.16,1,.3,1)
+.ovl.on{display:flex}
+.ovl .oic{
+  width:88px;height:88px;border-radius:50%;background:rgba(94,232,164,.08);
+  display:flex;align-items:center;justify-content:center;font-size:42px;
+  margin-bottom:28px;animation:oPop .7s cubic-bezier(.16,1,.3,1)
 }
-@keyframes ovPop{0%{transform:scale(0);opacity:0}70%{transform:scale(1.1)}100%{transform:scale(1);opacity:1}}
-.ov h2{font-size:26px;font-weight:800;margin-bottom:8px;letter-spacing:-.5px}
-.ov p{color:var(--t2);font-size:14px;margin-bottom:36px;text-align:center;line-height:1.7}
-.ov .btn-p{padding:14px 42px;border-radius:14px;font-size:15px;font-weight:700;background:var(--p);color:#fff;border:none;cursor:pointer;font-family:inherit;box-shadow:0 8px 28px rgba(108,140,255,.3);transition:all .25s}
-.ov .btn-p:hover{transform:translateY(-2px);filter:brightness(1.1)}
+@keyframes oPop{0%{transform:scale(0);opacity:0}70%{transform:scale(1.1)}100%{transform:scale(1);opacity:1}}
+.ovl h2{font-size:24px;font-weight:700;margin-bottom:8px}
+.ovl p{color:var(--t2);font-size:14px;margin-bottom:40px;text-align:center;line-height:1.7}
+.ovl button{padding:14px 44px;border-radius:12px;font-size:14px;font-weight:700;background:var(--ac);color:#fff;border:none;cursor:pointer;font-family:inherit;transition:all .25s}
+.ovl button:hover{transform:translateY(-2px)}
 
-/* ════════ FOOTER ════════ */
-.ft{text-align:center;padding:50px 24px 70px;border-top:1px solid rgba(255,255,255,.02);position:relative;z-index:1}
+/* ═══════════════ FOOTER ═══════════════ */
+.ft{text-align:center;padding:60px 24px;border-top:1px solid rgba(255,255,255,.02)}
 .ft span{font-size:12px;color:var(--t3)}
 
-@media(max-width:640px){
-  .nav{padding:12px 16px}.nav-r a{display:none}
-  .hero h1{font-size:34px}.feat-grid{grid-template-columns:1fr 1fr}
-  .stat-line{gap:30px;flex-wrap:wrap}.pl2{grid-template-columns:1fr}
-  .wiz-body{padding:24px 20px}.wiz-foot{padding:14px 20px}
-  .summ{grid-template-columns:1fr}
+@media(max-width:768px){
+  .hero{flex-direction:column;padding:140px 24px 60px;text-align:center}
+  .hero-r{margin-top:60px}
+  .hero-shape{width:260px;height:260px}
+  .feat-grid{grid-template-columns:1fr}
+  .wiz-body{padding:28px 24px}.wiz-foot{padding:14px 24px}
+  .p2{grid-template-columns:1fr}.sg{grid-template-columns:1fr}
 }
 </style>
 </head>
 <body>
-<div class="cursor-glow" id="glow"></div>
+<div class="scroll-bar" id="scrollBar"></div>
+<div class="noise"></div>
 
 <nav class="nav">
-  <div class="nav-l"><div class="nav-icon">🛏️</div><span class="nav-name">小安 XiaoAn</span></div>
-  <div class="nav-r">
-    <a href="#features">功能</a><a href="#setup">配置</a><a href="#">文档</a>
-    <button class="nav-cta" onclick="document.getElementById('setup').scrollIntoView({behavior:'smooth'})">开始设置</button>
-  </div>
+  <div class="nav-logo"><div class="icon">🛏️</div><span>小安</span></div>
+  <button class="nav-cta" onclick="document.getElementById('setup').scrollIntoView({behavior:'smooth'})">开始设置</button>
 </nav>
 
 <section class="hero">
-  <div class="float-pill p1"></div><div class="float-pill p2"></div>
-  <div class="hero-badge"><span class="live"></span> 第二代 · 智能睡眠伴侣</div>
-  <h1>你的每一夜<br>都值得被认真对待</h1>
-  <p>从躺下的那一刻起，小安就开始工作。感知你的睡姿、调节枕头高度、在你说话时温柔回应。它不只是枕头，是懂你的枕边人。</p>
-  <div class="hero-btns">
-    <button class="btn btn-p" onclick="document.getElementById('setup').scrollIntoView({behavior:'smooth'})">✨ 开始个性化设置</button>
-    <button class="btn btn-s">了解更多</button>
+  <div class="hero-l">
+    <div class="tag">第二代 · 智能睡眠伴侣</div>
+    <h1>你睡你的<br><span class="hl">它懂它的</span><br><span class="dim">不用说话</span></h1>
+    <div class="desc">躺下即感知，气压自适应。小安不打扰你——只是在需要的时候，恰好在那里。</div>
+    <div class="hero-btns">
+      <button class="btn btn-f" onclick="document.getElementById('setup').scrollIntoView({behavior:'smooth'})">个性化设置</button>
+      <button class="btn btn-o">了解技术细节</button>
+    </div>
   </div>
-</section>
-
-<section class="sec" id="features" style="padding-top:0">
-  <div class="feat-grid">
-    <div class="feat-card"><div class="feat-icon">🎙️</div><div class="feat-title">语音对话</div><div class="feat-desc">自然语音交互<br>支持中英文混合</div></div>
-    <div class="feat-card"><div class="feat-icon">📊</div><div class="feat-title">睡眠感知</div><div class="feat-desc">压力+温湿度+光照<br>16 维实时监测</div></div>
-    <div class="feat-card"><div class="feat-icon">🛡️</div><div class="feat-title">智能安全</div><div class="feat-desc">气压上限+急停<br>多级硬件保护</div></div>
-    <div class="feat-card"><div class="feat-icon">🧠</div><div class="feat-title">AI 决策</div><div class="feat-desc">DeepSeek 驱动<br>主动问候+策略调节</div></div>
-  </div>
-  <div class="stat-line" style="margin-top:60px">
-    <div class="stat"><h3>0.6 kPa</h3><p>最低感知气压</p></div>
-    <div class="stat"><h3>&lt;500ms</h3><p>语音响应延迟</p></div>
-    <div class="stat"><h3>8 个</h3><p>环境传感器</p></div>
-    <div class="stat"><h3>24/7</h3><p>全天候运行</p></div>
-  </div>
-</section>
-
-<section class="sec" id="setup">
-  <div class="wiz-wrap">
-    <div class="wiz-label">个性化配置</div>
-    <div class="wiz-title">2 分钟，定制你的小安</div>
-    <div class="wiz-sub">所有设置云端同步，随时可修改</div>
-    <div class="wiz">
-      <div class="wiz-head" id="wizHead">
-        <div class="ws cur" data-w="0"><span class="n">1</span>习惯</div>
-        <div class="ws" data-w="1"><div class="line"></div><span class="n">2</span>个性</div>
-        <div class="ws" data-w="2"><div class="line"></div><span class="n">3</span>安全</div>
-        <div class="ws" data-w="3"><div class="line"></div><span class="n">4</span>确认</div>
-      </div>
-      <div class="wiz-body">
-        <div class="wb on" data-w="0">
-          <h3>🌙 睡眠习惯</h3><div class="sub">告诉小安你的作息，自动调整问候与勿扰</div>
-          <div class="fd"><label>就寝时间</label><div class="tm"><input type="time" id="s1a" value="23:00"><span class="arr">→</span><input type="time" id="s1b" value="07:30"><span style="font-size:12px;color:var(--t3);margin-left:4px">起床</span></div></div>
-          <div class="fd"><label>居住城市</label><div class="sel-w"><select id="s1c"><option value="beijing">北京</option><option value="shanghai">上海</option><option value="shenzhen">深圳</option><option value="chengdu">成都</option><option value="chongqing" selected>重庆</option><option value="hangzhou">杭州</option><option value="guangzhou">广州</option></select></div></div>
-        </div>
-        <div class="wb" data-w="1">
-          <h3>💬 AI 性格 & 唤醒</h3><div class="sub">选你喜欢的聊天风格和叫醒方式</div>
-          <div class="fd"><label>AI 性格</label><div class="pl2" id="personality">
-            <label class="plo sel" onclick="selP(this)"><input type="radio" name="p" value="gentle" checked><div class="ck">✓</div><div class="em">🌸</div><div class="nm">温柔陪伴型</div><div class="ds">话多不啰嗦，语气慵懒<br>像枕边的朋友</div></label>
-            <label class="plo" onclick="selP(this)"><input type="radio" name="p" value="concise"><div class="ck">✓</div><div class="em">⚡</div><div class="nm">简洁助理型</div><div class="ds">话少精炼，直奔主题<br>不多说一句废话</div></label>
-          </div></div>
-          <div class="fd"><label>唤醒方式</label>
-            <div class="tgl"><div class="tgl-info"><div class="tl">🎵 轻音乐</div><div class="td">钢琴曲渐强播放</div></div><div class="sw on" onclick="this.classList.toggle('on')"></div></div>
-            <div class="tgl"><div class="tgl-info"><div class="tl">💡 渐亮灯光</div><div class="td">模拟日出 30 分钟渐变</div></div><div class="sw" onclick="this.classList.toggle('on')"></div></div>
-            <div class="tgl"><div class="tgl-info"><div class="tl">🫧 气囊轻提醒</div><div class="td">枕头微微起伏唤醒</div></div><div class="sw on" onclick="this.classList.toggle('on')"></div></div>
-          </div>
-        </div>
-        <div class="wb" data-w="2">
-          <h3>🛡️ 隐私 & 安全</h3><div class="sub">你的数据你做主，硬件安全防线</div>
-          <div class="fd"><label>PC Agent 可读目录</label><div class="chips"><span class="chip">📁 demo_mail/</span><span class="chip">📁 demo_docs/</span></div></div>
-          <div class="fd"><label>气压安全上限</label>
-            <div class="g-h"><span style="font-size:12px;color:var(--t2)">上限值</span><span><span class="g-v" id="gv">5.0</span><span class="g-u">kPa</span></span></div>
-            <div class="g-tr" id="gTrack"><div class="g-f" style="width:50%"></div><div class="g-tb" style="left:50%"></div></div>
-            <div class="g-tk"><span>0</span><span>2.5</span><span>5.0</span><span>7.5</span><span>10.0</span></div>
-            <input type="range" min="1" max="10" step=".1" value="5.0" id="gS" style="display:none">
-          </div>
-          <div class="fd"><label>夜间勿扰</label><div class="tm"><input type="time" id="s3a" value="23:00"><span class="arr">→</span><input type="time" id="s3b" value="07:00"></div></div>
-        </div>
-        <div class="wb" data-w="3">
-          <h3>✅ 确认配置</h3><div class="sub">检查无误后保存</div>
-          <div class="summ" id="summGrid"></div>
-        </div>
-      </div>
-      <div class="wiz-foot">
-        <button class="wf-b" onclick="prev()">←</button>
-        <button class="wf-n" id="nxtBtn" onclick="next()">下一步</button>
-      </div>
+  <div class="hero-r">
+    <div class="hero-shape">
+      <div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div>
+      <div class="core"></div>
     </div>
   </div>
 </section>
 
-<footer class="ft"><span>© 2026 XiaoAn · 智能睡眠伴侣</span></footer>
+<div class="quote">
+  <p>"不是让你睡得更久，是让你<b>睡完之后，觉得够了</b>。"</p>
+</div>
 
-<div class="ov" id="successOv">
-  <div class="ov-ic">✨</div>
-  <h2>设置完成，小安已就绪</h2>
-  <p>今晚躺下时，你会听到第一声问候<br>晚安，好梦 🌙</p>
-  <button class="btn-p" onclick="document.getElementById('successOv').classList.remove('on')">开始使用</button>
+<section class="feat-sec">
+  <div class="sec-num">01 · 核心能力</div>
+  <div class="sec-title">四个维度，一个枕头</div>
+  <div class="feat-grid">
+    <div class="feat-card">
+      <div class="fi f1">🎙</div>
+      <div><div class="ft">语音对话</div><div class="fd">远场拾音 + AEC 回声消除。说"你好小安"唤醒，自然对话，不打断你的睡前状态。支持中英文混合，DeepSeek 驱动推理。</div></div>
+    </div>
+    <div class="feat-card">
+      <div class="fi f2">📊</div>
+      <div><div class="ft">环境感知</div><div class="fd">气压(0-10kPa)、四路体压(FSR402)、温湿度(SHT31)、光照(BH1750)、空气质量(MQ-135)。16 维数据实时融合。</div></div>
+    </div>
+    <div class="feat-card">
+      <div class="fi f3">🛡</div>
+      <div><div class="ft">安全底线</div><div class="fd">D4184 PWM 气泵调速 + 电磁阀急泄。气压上限硬限制、语音急停、30s 超时保护、夜间勿扰模式。</div></div>
+    </div>
+    <div class="feat-card">
+      <div class="fi f4">🧠</div>
+      <div><div class="ft">AI 主动</div><div class="fd">不是被动回答问题——检测到你躺下，主动问候。睡前场景自动触发。FSR 体压分布 + 气压传感器联动决策。</div></div>
+    </div>
+  </div>
+</section>
+
+<section class="wiz-sec" id="setup">
+  <div class="sec-num">02 · 个性化</div>
+  <div class="sec-title">两分钟，让小安认识你</div>
+  <div class="wiz">
+    <div class="wiz-top" id="wizTop">
+      <div class="wt cur" data-w="0">习惯</div>
+      <div class="wt" data-w="1">个性</div>
+      <div class="wt" data-w="2">安全</div>
+      <div class="wt" data-w="3">确认</div>
+    </div>
+    <div class="wiz-body">
+      <div class="ws on" data-w="0">
+        <h3>睡眠时间 & 地点</h3>
+        <div class="sub">小安根据作息自动调整问候时机和勿扰窗口</div>
+        <div class="ff"><label>就寝时间</label><div class="tr"><input type="time" id="s1a" value="23:00"><span class="arw">→</span><input type="time" id="s1b" value="07:30"><span style="font-size:12px;color:var(--t3);margin-left:4px">起床</span></div></div>
+        <div class="ff"><label>居住城市</label><div class="sel-wr"><select id="s1c"><option value="beijing">北京</option><option value="shanghai">上海</option><option value="shenzhen">深圳</option><option value="chengdu">成都</option><option value="chongqing" selected>重庆</option><option value="hangzhou">杭州</option><option value="guangzhou">广州</option></select></div></div>
+      </div>
+      <div class="ws" data-w="1">
+        <h3>AI 性格 & 唤醒偏好</h3>
+        <div class="sub">选择聊天风格和起床唤醒方式</div>
+        <div class="ff"><label>AI 性格</label>
+          <div class="p2" id="personality">
+            <label class="po sel" onclick="selP(this)"><input type="radio" name="p" value="gentle" checked><div class="ck">✓</div><div class="em">🌸</div><div class="pn">温柔陪伴</div><div class="pd">话多不啰嗦，语气慵懒<br>像枕边的朋友</div></label>
+            <label class="po" onclick="selP(this)"><input type="radio" name="p" value="concise"><div class="ck">✓</div><div class="em">⚡</div><div class="pn">简洁助理</div><div class="pd">话少精炼，直奔主题<br>不多说一句废话</div></label>
+          </div>
+        </div>
+        <div class="ff"><label>唤醒方式</label>
+          <div class="tgl"><div class="tgl-l"><div class="tl">🎵 轻音乐</div><div class="td">钢琴曲渐强播放</div></div><div class="ts on" onclick="this.classList.toggle('on')"></div></div>
+          <div class="tgl"><div class="tgl-l"><div class="tl">💡 渐亮灯光</div><div class="td">模拟日出 30 分钟渐变</div></div><div class="ts" onclick="this.classList.toggle('on')"></div></div>
+          <div class="tgl"><div class="tgl-l"><div class="tl">🫧 气囊提醒</div><div class="td">枕头微微起伏唤醒</div></div><div class="ts on" onclick="this.classList.toggle('on')"></div></div>
+        </div>
+      </div>
+      <div class="ws" data-w="2">
+        <h3>隐私 & 安全</h3>
+        <div class="sub">你的数据你做主</div>
+        <div class="ff"><label>PC Agent 授权</label><div class="ch"><span>📁 demo_mail/</span><span>📁 demo_docs/</span></div></div>
+        <div class="ff"><label>气压安全上限</label>
+          <div class="gh"><span style="font-size:12px;color:var(--t2)">当前上限</span><span><span class="gv" id="gv">5.0</span><span class="gu">kPa</span></span></div>
+          <div class="gb" id="gTrack"><div class="gf" style="width:50%"></div><div class="gth" style="left:50%"></div></div>
+          <div class="gtk"><span>0</span><span>2.5</span><span>5.0</span><span>7.5</span><span>10.0</span></div>
+          <input type="range" min="1" max="10" step=".1" value="5.0" id="gS" style="display:none">
+        </div>
+        <div class="ff"><label>夜间勿扰</label><div class="tr"><input type="time" id="s3a" value="23:00"><span class="arw">→</span><input type="time" id="s3b" value="07:00"></div></div>
+      </div>
+      <div class="ws" data-w="3">
+        <h3>确认配置</h3><div class="sub">检查无误后保存，随时可改</div>
+        <div class="sg" id="summGrid"></div>
+      </div>
+    </div>
+    <div class="wiz-foot">
+      <button class="wfb" onclick="prev()">←</button>
+      <button class="wfn" id="nxtBtn" onclick="next()">下一步</button>
+    </div>
+  </div>
+</section>
+
+<footer class="ft"><span>© 2026 XiaoAn</span></footer>
+
+<div class="ovl" id="successOv">
+  <div class="oic">✨</div><h2>小安已就绪</h2>
+  <p>今晚躺下时，你会听到第一声问候<br>晚安，好梦</p>
+  <button onclick="document.getElementById('successOv').classList.remove('on')">开始使用</button>
 </div>
 
 <script>
-/* ── Mouse glow ── */
-const glow=document.getElementById('glow');
-document.addEventListener('mousemove',e=>{glow.style.left=e.clientX+'px';glow.style.top=e.clientY+'px'});
-
-/* ── Card hover glow ── */
-document.querySelectorAll('.feat-card').forEach(c=>{
-  c.addEventListener('mousemove',e=>{
-    const r=c.getBoundingClientRect();
-    c.style.setProperty('--mx',(e.clientX-r.left)+'px');
-    c.style.setProperty('--my',(e.clientY-r.top)+'px');
-  });
+/* scroll bar */
+window.addEventListener('scroll',()=>{
+  const h=document.documentElement.scrollHeight-window.innerHeight;
+  document.getElementById('scrollBar').style.width=(h>0?(window.scrollY/h*100):0)+'%';
 });
 
-/* ── Wizard ── */
+/* wizard */
 let ws=0,wt=4;
-function upWs(){
-  document.querySelectorAll('#wizHead .ws').forEach((el,i)=>{
+function upW(){
+  document.querySelectorAll('#wizTop .wt').forEach((el,i)=>{
     el.classList.remove('done','cur');
     if(i<ws)el.classList.add('done');
     if(i===ws)el.classList.add('cur');
   });
-  document.getElementById('nxtBtn').textContent=ws===wt-1?'✓ 完成设置':'下一步';
+  document.getElementById('nxtBtn').textContent=ws===wt-1?'✓ 完成':'下一步';
 }
 function showW(n){
   if(n<0||n>=wt)return;
-  document.querySelectorAll('.wb').forEach(s=>s.classList.remove('on'));
-  const t=document.querySelector(`.wb[data-w="${n}"]`);
+  document.querySelectorAll('.ws').forEach(s=>s.classList.remove('on'));
+  const t=document.querySelector(`.ws[data-w="${n}"]`);
   if(t){t.classList.add('on');t.style.animation='none';t.offsetHeight;t.style.animation=''}
-  ws=n;upWs();if(n===3)upSumm();
+  ws=n;upW();if(n===3)upSumm();
 }
 function next(){if(ws===wt-1){finish();return}showW(ws+1)}
 function prev(){showW(ws-1)}
 function selP(el){
-  el.parentElement.querySelectorAll('.plo').forEach(c=>c.classList.remove('sel'));
+  el.parentElement.querySelectorAll('.po').forEach(c=>c.classList.remove('sel'));
   el.classList.add('sel');el.querySelector('input').checked=true;
 }
 
-/* ── Gauge drag ── */
-const gTr=document.getElementById('gTrack'),gF=gTr.querySelector('.g-f'),gTb=gTr.querySelector('.g-tb'),gV=document.getElementById('gv'),gS=document.getElementById('gS');
+/* gauge */
+const gTr=document.getElementById('gTrack'),gF=gTr.querySelector('.gf'),gTb=gTr.querySelector('.gth'),gV=document.getElementById('gv'),gS=document.getElementById('gS');
 let drg=false;
 function upG(cx){
   const r=gTr.getBoundingClientRect(),p=Math.max(0,Math.min(1,(cx-r.left)/r.width)),v=Math.round(p*100)/10;
@@ -469,16 +440,15 @@ document.addEventListener('touchmove',e=>{if(drg)upG(e.touches[0].clientX)});
 document.addEventListener('mouseup',()=>drg=false);
 document.addEventListener('touchend',()=>drg=false);
 
-/* ── Summary ── */
 function upSumm(){
   const sleep=document.getElementById('s1a').value+' → '+document.getElementById('s1b').value;
   const ct=document.getElementById('s1c');const cn=ct.options[ct.selectedIndex].text;
   const pr=document.querySelector('input[name="p"]:checked').value==='gentle'?'🌸 温柔陪伴':'⚡ 简洁助理';
-  const al=[];document.querySelectorAll('.sw.on').forEach((t,i)=>al.push(['🎵轻音乐','💡渐亮灯光','🫧气囊提醒'][i]));
+  const al=[];document.querySelectorAll('.ts.on').forEach((t,i)=>al.push(['🎵轻音乐','💡渐亮灯光','🫧气囊提醒'][i]));
   const ps=parseFloat(gS.value||5);const dnd=document.getElementById('s3a').value+' → '+document.getElementById('s3b').value;
   document.getElementById('summGrid').innerHTML=[
     ['睡眠',sleep],['城市',cn],['AI性格',pr],['闹钟',al.join(' · ')||'无'],
-    ['P C Agent','demo_mail/ demo_docs/'],['气压上限',ps.toFixed(1)+' kPa'],['勿扰',dnd],['急停','语音触发']
+    ['PC Agent','demo_mail/ demo_docs/'],['气压上限',ps.toFixed(1)+' kPa'],['勿扰',dnd],['急停','语音触发']
   ].map(([k,v])=>`<div class="sr"><span class="sk">${k}</span><span class="sv">${v}</span></div>`).join('');
 }
 
@@ -487,7 +457,7 @@ function finish(){
     sleep:{start:document.getElementById('s1a').value,end:document.getElementById('s1b').value},
     location:document.getElementById('s1c').value,
     personality:document.querySelector('input[name="p"]:checked').value,
-    alarm:(()=>{const a=[];document.querySelectorAll('.sw.on').forEach((t,i)=>a.push(['music','light','airbag'][i]));return a;})(),
+    alarm:(()=>{const a=[];document.querySelectorAll('.ts.on').forEach((t,i)=>a.push(['music','light','airbag'][i]));return a;})(),
     pc_agent:{allowed_paths:['demo_mail/','demo_docs/']},
     safety:{pressure_max_kpa:parseFloat(gS.value||5),dnd_start:document.getElementById('s3a').value,dnd_end:document.getElementById('s3b').value}
   };
