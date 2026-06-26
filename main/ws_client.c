@@ -30,7 +30,7 @@ static volatile uint32_t s_tts_chunks_dropped = 0;
 static OpusDecoder *s_decoder = NULL;  // ★ 模块级，避免每次 TTS 懒初始化
 
 // ── 气泵命令（独立 FreeRTOS 任务，不阻塞 audio/websocket）──
-typedef enum { PUMP_NONE, PUMP_TILT, PUMP_RECOVER, PUMP_STOP,
+typedef enum { PUMP_NONE, PUMP_TILT, PUMP_RECOVER, PUMP_STOP, PUMP_HALT,
                PUMP_TILT_TO_KPA, PUMP_RECOVER_TO_KPA } pump_cmd_t;
 static volatile pump_cmd_t s_pump_cmd = PUMP_NONE;
 static volatile int        s_pump_dur = 0;
@@ -43,6 +43,38 @@ static volatile bool  s_last_pump_inflate = false;
 static volatile float s_last_pump_target  = 0;
 static volatile float s_last_pump_result  = 0;
 
+static bool pump_consume_interrupt(void)
+{
+    pump_cmd_t pending = s_pump_cmd;
+    if (pending == PUMP_HALT) {
+        s_pump_cmd = PUMP_NONE;
+        pump_stop();
+        valve_close();
+        return true;
+    }
+    if (pending == PUMP_STOP) {
+        s_pump_cmd = PUMP_NONE;
+        emergency_release();
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        valve_close();
+        return true;
+    }
+    return false;
+}
+
+static void pump_wait_interruptible(int duration_sec)
+{
+    int remaining_ms = duration_sec * 1000;
+    while (remaining_ms > 0) {
+        if (pump_consume_interrupt()) {
+            break;
+        }
+        int step_ms = remaining_ms > 100 ? 100 : remaining_ms;
+        vTaskDelay(pdMS_TO_TICKS(step_ms));
+        remaining_ms -= step_ms;
+    }
+}
+
 static void pump_task(void *arg) {
     while (1) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -51,10 +83,13 @@ static void pump_task(void *arg) {
 
         if (cmd == PUMP_TILT) {
             printf("[枕头] 充气 %ds\n", dur);
-            pump_start(); vTaskDelay(pdMS_TO_TICKS(dur * 1000)); pump_stop();
+            pump_start(); pump_wait_interruptible(dur); pump_stop();
         } else if (cmd == PUMP_RECOVER) {
             printf("[枕头] 泄气 %ds\n", dur);
-            valve_open(); vTaskDelay(pdMS_TO_TICKS(dur * 1000)); valve_close();
+            valve_open(); pump_wait_interruptible(dur); valve_close();
+        } else if (cmd == PUMP_HALT) {
+            printf("[pillow] halt\n");
+            pump_stop(); valve_close();
         } else if (cmd == PUMP_STOP) {
             printf("[枕头] 急停\n");
             emergency_release(); vTaskDelay(pdMS_TO_TICKS(3000)); valve_close();
@@ -479,7 +514,7 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                         // ★ 开环模式：纯时间控制（兼容旧协议）
                         int dur = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(json, "duration_sec"));
                         if (dur < 1) dur = 3;
-                        if (dur > 7) dur = 7;
+                        if (dur > 600) dur = 600;
 
                         if (strcmp(action, "tilt") == 0) {
                             s_pump_cmd = PUMP_TILT; s_pump_dur = dur;
@@ -487,6 +522,8 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                             s_pump_cmd = PUMP_RECOVER; s_pump_dur = dur;
                         } else if (strcmp(action, "stop") == 0) {
                             s_pump_cmd = PUMP_STOP; s_pump_dur = 0;
+                        } else if (strcmp(action, "halt") == 0) {
+                            s_pump_cmd = PUMP_HALT; s_pump_dur = 0;
                         }
                         printf("[枕头] LLM指令: %s %ds (排队中)\n", action, dur);
                     }
