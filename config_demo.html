@@ -3,617 +3,496 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>小安 XiaoAn · 智能睡眠伴侣</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+<title>小安 XiaoAn · 智能睡眠</title>
 <style>
 :root {
-  --bg: #05070d;
-  --bg2: #0a0e18;
-  --surface: #111620;
-  --surface2: #181f2e;
-  --border: #1f2a3f;
-  --border-light: #2a3858;
-  --text: #eaeef6;
-  --text2: #95a1bb;
-  --text3: #5c6884;
-  --pri: #6d8aff;
-  --pri2: #8b9fff;
-  --pri-glow: rgba(109,138,255,0.2);
-  --pri-strong: rgba(109,138,255,0.35);
-  --grn: #4ade80;
-  --grn-glow: rgba(74,222,128,0.15);
-  --amb: #fbbf24;
-  --amb-glow: rgba(251,191,36,0.15);
-  --red: #f87171;
-  --pink: #f472b6;
-  --rad: 24px;
-  --rad-sm: 14px;
-  --rad-xs: 10px;
+  --ink:#05070f; --ink2:#0b0f1c; --card:#111623; --card2:#181e2f;
+  --b:#1e2740; --b2:#283455; --t:#edf0f8; --t2:#99a5c0; --t3:#566080;
+  --p:#6c8cff; --pg:rgba(108,140,255,.18); --g:#4ade80; --a:#fbbf24;
+  --r:#f87171; --pk:#f472b6;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth;scrollbar-width:thin;scrollbar-color:var(--b) transparent}
+body{
+  font-family:'Inter',-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;
+  background:var(--ink);color:var(--t);-webkit-font-smoothing:antialiased;
+  overflow-x:hidden;cursor:default
+}
+::-webkit-scrollbar{width:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--b);border-radius:10px}
+
+/* ════════ MOUSE GLOW ════════ */
+.cursor-glow{
+  position:fixed;pointer-events:none;z-index:999;
+  width:600px;height:600px;border-radius:50%;
+  background:radial-gradient(circle,rgba(108,140,255,.04),transparent 60%);
+  transform:translate(-50%,-50%);transition:opacity .6s;
+}
+/* ════════ NAV ════════ */
+.nav{
+  position:fixed;top:0;left:0;right:0;z-index:100;padding:16px 40px;
+  display:flex;align-items:center;justify-content:space-between;
+  backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+  background:rgba(5,7,15,.65);border-bottom:1px solid rgba(255,255,255,.04);
+  transition:all .3s;
+}
+.nav-l{display:flex;align-items:center;gap:12px}
+.nav-icon{
+  width:36px;height:36px;border-radius:10px;
+  background:linear-gradient(135deg,#6c8cff,#a78bfa);
+  display:flex;align-items:center;justify-content:center;font-size:19px;
+  box-shadow:0 6px 24px rgba(108,140,255,.3);
+}
+.nav-name{font-size:17px;font-weight:700;letter-spacing:-.4px}
+.nav-r{display:flex;gap:28px;align-items:center}
+.nav-r a{font-size:13px;color:var(--t2);text-decoration:none;font-weight:500;transition:color .2s}
+.nav-r a:hover{color:var(--t)}
+.nav-cta{
+  padding:9px 22px;border-radius:22px;font-size:13px;font-weight:700;
+  background:rgba(255,255,255,.06);color:var(--t);border:1px solid rgba(255,255,255,.08);
+  cursor:pointer;font-family:inherit;transition:all .3s;
+}
+.nav-cta:hover{background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.15)}
+
+/* ════════ SECTIONS ════════ */
+.sec{padding:120px 24px;position:relative;z-index:1}
+
+/* ════════ HERO ════════ */
+.hero{
+  min-height:100vh;display:flex;align-items:center;justify-content:center;
+  text-align:center;flex-direction:column;position:relative;overflow:hidden;
+}
+.hero::before{
+  content:'';position:absolute;inset:0;
+  background:radial-gradient(ellipse 60% 50% at 50% 30%,rgba(108,140,255,.06),transparent),
+             radial-gradient(ellipse 40% 40% at 80% 70%,rgba(244,114,182,.04),transparent);
+}
+.hero-badge{
+  display:inline-flex;align-items:center;gap:7px;padding:7px 18px;
+  border-radius:24px;font-size:12px;font-weight:600;margin-bottom:32px;
+  background:rgba(108,140,255,.07);border:1px solid rgba(108,140,255,.12);
+  color:#92a6ff;position:relative;z-index:1;
+}
+.hero-badge .live{width:6px;height:6px;border-radius:50%;background:var(--g);box-shadow:0 0 10px rgba(74,222,128,.6);animation:livePulse 2s infinite}
+@keyframes livePulse{0%,100%{opacity:1}50%{opacity:.25}}
+.hero h1{
+  font-size:clamp(42px,8vw,76px);font-weight:900;letter-spacing:-2px;
+  line-height:1.08;position:relative;z-index:1;margin-bottom:24px;
+  background:linear-gradient(180deg,#fff 20%,#92a6ff 100%);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;
+}
+.hero p{
+  font-size:17px;color:var(--t2);line-height:1.7;max-width:540px;
+  position:relative;z-index:1;margin-bottom:40px;
+}
+.hero-btns{display:flex;gap:14px;position:relative;z-index:1}
+.btn{
+  padding:16px 34px;border-radius:16px;font-size:15px;font-weight:700;
+  border:none;cursor:pointer;font-family:inherit;letter-spacing:-.2px;
+  transition:all .35s cubic-bezier(.22,.61,.36,1);
+}
+.btn-p{
+  background:var(--p);color:#fff;box-shadow:0 8px 32px rgba(108,140,255,.3),0 0 0 1px rgba(108,140,255,.15) inset;
+}
+.btn-p:hover{transform:translateY(-3px);box-shadow:0 16px 42px rgba(108,140,255,.4);filter:brightness(1.06)}
+.btn-s{
+  background:rgba(255,255,255,.03);color:var(--t);border:1px solid rgba(255,255,255,.08);
+}
+.btn-s:hover{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.14)}
+
+/* ════════ FLOATING PILL ════════ */
+.float-pill{
+  position:absolute;border-radius:50%;filter:blur(100px);opacity:.06;
+  pointer-events:none;animation:floatPill 12s ease-in-out infinite;
+}
+.float-pill.p1{width:500px;height:500px;background:var(--p);top:10%;left:-10%;animation-delay:0s}
+.float-pill.p2{width:350px;height:350px;background:var(--pk);bottom:5%;right:-5%;animation-delay:-6s}
+@keyframes floatPill{0%,100%{transform:translate(0,0) scale(1)}33%{transform:translate(40px,-30px) scale(1.1)}66%{transform:translate(-20px,20px) scale(.9)}}
+
+/* ════════ FEATURES GRID ════════ */
+.feat-grid{
+  display:grid;grid-template-columns:repeat(4,1fr);gap:16px;
+  max-width:1100px;margin:0 auto;position:relative;z-index:1;
+}
+.feat-card{
+  background:var(--card);border:1px solid var(--b);border-radius:24px;
+  padding:32px 24px;text-align:center;transition:all .4s;
+  position:relative;overflow:hidden;
+}
+.feat-card::before{
+  content:'';position:absolute;inset:0;opacity:0;transition:opacity .4s;
+  background:radial-gradient(600px circle at var(--mx) var(--my),rgba(108,140,255,.06),transparent 40%);
+}
+.feat-card:hover::before{opacity:1}
+.feat-card:hover{transform:translateY(-6px);border-color:var(--b2);box-shadow:0 20px 50px rgba(0,0,0,.3)}
+.feat-icon{
+  width:56px;height:56px;border-radius:16px;display:inline-flex;
+  align-items:center;justify-content:center;font-size:26px;margin-bottom:18px;
+  position:relative;z-index:1;
+}
+.feat-card:nth-child(1) .feat-icon{background:rgba(108,140,255,.12)}
+.feat-card:nth-child(2) .feat-icon{background:rgba(74,222,128,.1)}
+.feat-card:nth-child(3) .feat-icon{background:rgba(251,191,36,.1)}
+.feat-card:nth-child(4) .feat-icon{background:rgba(244,114,182,.1)}
+.feat-title{font-size:15px;font-weight:700;margin-bottom:6px;position:relative;z-index:1}
+.feat-desc{font-size:12px;color:var(--t2);line-height:1.6;position:relative;z-index:1}
+
+/* ════════ STAT LINE ════════ */
+.stat-line{
+  display:flex;gap:60px;justify-content:center;padding:60px 0;
+  border-top:1px solid rgba(255,255,255,.03);border-bottom:1px solid rgba(255,255,255,.03);
+  max-width:800px;margin:0 auto;position:relative;z-index:1;
+}
+.stat h3{font-size:36px;font-weight:900;letter-spacing:-1px;background:linear-gradient(135deg,var(--t),var(--t2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.stat p{font-size:12px;color:var(--t3);margin-top:4px}
+
+/* ════════ WIZARD ════════ */
+.wiz-wrap{max-width:760px;margin:0 auto;position:relative;z-index:1}
+.wiz-label{text-align:center;font-size:11px;color:var(--p);font-weight:700;text-transform:uppercase;letter-spacing:2px;margin-bottom:10px}
+.wiz-title{text-align:center;font-size:30px;font-weight:800;letter-spacing:-.5px;margin-bottom:6px}
+.wiz-sub{text-align:center;font-size:14px;color:var(--t2);margin-bottom:48px}
+.wiz{
+  background:var(--card);border:1px solid var(--b);border-radius:24px;
+  overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.3);
+}
+.wiz-head{
+  display:flex;align-items:center;padding:18px 32px;
+  border-bottom:1px solid var(--b);gap:0;
+}
+.ws{
+  display:flex;align-items:center;gap:8px;font-size:12px;
+  color:var(--t3);font-weight:500;flex:1;justify-content:center;
+}
+.ws .n{
+  width:26px;height:26px;border-radius:50%;display:flex;align-items:center;
+  justify-content:center;font-size:11px;font-weight:700;background:var(--b);color:var(--t3);transition:all .4s
+}
+.ws.done .n{background:var(--p);color:#fff}
+.ws.cur .n{background:var(--p);color:#fff;box-shadow:0 0 18px var(--pg)}
+.ws .line{flex:1;height:1px;background:var(--b);min-width:30px}
+.ws.done .line{background:var(--p);opacity:.25}
+
+.wiz-body{padding:40px 48px;min-height:340px}
+.wb{display:none;animation:wbIn .5s ease-out}
+.wb.on{display:block}
+@keyframes wbIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+.wb h3{font-size:21px;font-weight:700;margin-bottom:4px;letter-spacing:-.4px}
+.wb .sub{font-size:13px;color:var(--t2);margin-bottom:30px}
+
+.fd{margin-bottom:22px}
+.fd label{display:block;font-size:11px;color:var(--t3);font-weight:600;text-transform:uppercase;letter-spacing:.6px;margin-bottom:7px}
+.tm{display:flex;align-items:center;gap:10px}
+.tm input[type=time]{
+  background:var(--card2);border:1px solid var(--b);color:var(--t);
+  padding:11px 14px;border-radius:10px;font-size:15px;font-family:inherit;
+  width:110px;text-align:center;font-weight:600;outline:none;transition:all .2s
+}
+.tm input[type=time]:focus{border-color:var(--p);box-shadow:0 0 0 3px var(--pg)}
+.tm .arr{color:var(--t3);font-weight:300}
+.sel-w{position:relative}
+.sel-w select{
+  width:100%;background:var(--card2);border:1px solid var(--b);color:var(--t);
+  font-size:14px;padding:12px 38px 12px 14px;border-radius:10px;
+  outline:none;font-family:inherit;appearance:none;cursor:pointer;font-weight:500;transition:all .2s
+}
+.sel-w select:focus{border-color:var(--p);box-shadow:0 0 0 3px var(--pg)}
+.sel-w::after{content:'';position:absolute;right:14px;top:50%;transform:translateY(-50%);border:5px solid transparent;border-top:6px solid var(--t3);pointer-events:none}
+
+.pl2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.plo{
+  background:var(--card2);border:1.5px solid var(--b);border-radius:14px;
+  padding:24px 20px;cursor:pointer;text-align:center;transition:all .3s;position:relative
+}
+.plo:hover{border-color:var(--b2)}
+.plo.sel{border-color:var(--p);background:rgba(108,140,255,.04)}
+.plo .ck{
+  position:absolute;top:10px;right:12px;width:22px;height:22px;
+  border-radius:50%;background:var(--p);color:#fff;display:flex;
+  align-items:center;justify-content:center;font-size:11px;
+  opacity:0;transform:scale(.5);transition:all .35s
+}
+.plo.sel .ck{opacity:1;transform:scale(1)}
+.plo .em{font-size:34px;margin-bottom:8px}
+.plo .nm{font-size:15px;font-weight:700;margin-bottom:3px}
+.plo .ds{font-size:11px;color:var(--t2);line-height:1.5}
+.plo input{display:none}
+
+.tgl{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:13px 16px;background:var(--card2);border-radius:10px;margin-bottom:8px
+}
+.tgl-info{flex:1}
+.tgl-info .tl{font-size:14px;font-weight:600}
+.tgl-info .td{font-size:11px;color:var(--t3);margin-top:2px}
+.sw{
+  width:46px;height:26px;border-radius:13px;background:var(--b);
+  cursor:pointer;flex-shrink:0;position:relative;transition:background .3s
+}
+.sw.on{background:var(--p)}
+.sw::after{
+  content:'';position:absolute;top:2px;left:2px;width:22px;height:22px;
+  border-radius:50%;background:#fff;transition:transform .35s cubic-bezier(.22,.61,.36,1);
+  box-shadow:0 2px 6px rgba(0,0,0,.2)
+}
+.sw.on::after{transform:translateX(20px)}
+
+.chips{display:flex;gap:8px;flex-wrap:wrap}
+.chip{
+  padding:10px 16px;border-radius:20px;font-size:12px;background:var(--card2);
+  border:1px solid var(--b);color:var(--t2);font-family:'SF Mono','Fira Code',monospace;
+  display:flex;align-items:center;gap:5px
 }
 
-* { margin:0; padding:0; box-sizing:border-box; }
-html { scroll-behavior: smooth; }
+.g-h{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}
+.g-v{font-size:26px;font-weight:900;letter-spacing:-.5px}
+.g-u{font-size:12px;color:var(--t3);margin-left:3px}
+.g-tr{
+  height:8px;border-radius:4px;background:var(--card2);position:relative;
+  cursor:pointer;overflow:visible
+}
+.g-f{
+  height:100%;border-radius:4px;transition:width .3s;
+  background:linear-gradient(90deg,var(--g),var(--a) 55%,var(--r))
+}
+.g-tb{
+  position:absolute;top:50%;transform:translate(-50%,-50%);
+  width:22px;height:22px;border-radius:50%;background:#fff;
+  border:3px solid var(--p);box-shadow:0 3px 14px rgba(0,0,0,.5);
+  cursor:grab;transition:left .3s;z-index:2
+}
+.g-tk{display:flex;justify-content:space-between;font-size:10px;color:var(--t3);margin-top:5px}
 
-body {
-  font-family: 'Inter', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  background: var(--bg); color: var(--text);
-  -webkit-font-smoothing: antialiased; overflow-x: hidden;
+.summ{
+  display:grid;grid-template-columns:1fr 1fr;gap:10px;
+  background:var(--card2);border-radius:14px;padding:22px
 }
+.summ .sr{display:flex;justify-content:space-between;font-size:13px;padding:3px 0}
+.summ .sr .sk{color:var(--t3)}
+.summ .sr .sv{color:var(--t);font-weight:600}
 
-/* ═══════════════════════════════════════════════════
-   BACKGROUND
-   ═══════════════════════════════════════════════════ */
-.bg-grid {
-  position: fixed; inset: 0; z-index: 0; pointer-events: none;
-  background-image:
-    linear-gradient(rgba(109,138,255,0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(109,138,255,0.03) 1px, transparent 1px);
-  background-size: 60px 60px;
-  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 30%, transparent 70%);
+.wiz-foot{padding:18px 48px;border-top:1px solid var(--b);display:flex;gap:12px}
+.wf-b{
+  width:46px;height:46px;border-radius:12px;background:transparent;
+  border:1px solid var(--b);color:var(--t2);cursor:pointer;font-size:18px;
+  display:flex;align-items:center;justify-content:center;transition:all .2s
 }
-.bg-glow {
-  position: fixed; pointer-events: none; z-index: 0;
+.wf-b:hover{border-color:var(--b2);color:var(--t)}
+.wf-n{
+  flex:1;height:46px;border-radius:12px;background:var(--p);color:#fff;
+  border:none;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;
+  transition:all .25s;box-shadow:0 6px 22px rgba(108,140,255,.2)
 }
-.bg-glow.g1 {
-  width: 800px; height: 800px; background: radial-gradient(circle, rgba(109,138,255,0.06), transparent 70%);
-  top: -300px; left: 50%; transform: translateX(-50%);
-}
-.bg-glow.g2 {
-  width: 500px; height: 600px; background: radial-gradient(circle, rgba(244,114,182,0.04), transparent 70%);
-  bottom: -100px; right: -100px;
-}
+.wf-n:hover{filter:brightness(1.08);transform:translateY(-1px)}
 
-/* ═══════════════════════════════════════════════════
-   NAV
-   ═══════════════════════════════════════════════════ */
-.nav {
-  position: fixed; top: 0; left: 0; right: 0; z-index: 50;
-  padding: 16px 32px; display: flex; align-items: center; justify-content: space-between;
-  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
-  background: rgba(5,7,13,0.7); border-bottom: 1px solid rgba(255,255,255,0.04);
+/* ════════ SUCCESS ════════ */
+.ov{
+  position:fixed;inset:0;z-index:300;display:none;
+  background:rgba(5,7,15,.94);backdrop-filter:blur(14px);
+  align-items:center;justify-content:center;flex-direction:column
 }
-.nav-brand { display: flex; align-items: center; gap: 10px; }
-.nav-logo {
-  width: 34px; height: 34px; border-radius: 10px;
-  background: linear-gradient(135deg, #6d8aff, #a78bfa);
-  display: flex; align-items: center; justify-content: center;
-  font-size: 18px; box-shadow: 0 4px 20px rgba(109,138,255,0.3);
+.ov.on{display:flex}
+.ov-ic{
+  width:90px;height:90px;border-radius:50%;
+  background:linear-gradient(135deg,rgba(74,222,128,.15),rgba(74,222,128,.04));
+  display:flex;align-items:center;justify-content:center;font-size:46px;
+  margin-bottom:28px;animation:ovPop .7s cubic-bezier(.16,1,.3,1)
 }
-.nav-name { font-size: 16px; font-weight: 700; letter-spacing: -0.3px; }
-.nav-links { display: flex; gap: 24px; align-items: center; }
-.nav-link { font-size: 13px; color: var(--text2); cursor: pointer; transition: color 0.2s; font-weight: 500; text-decoration: none; }
-.nav-link:hover { color: var(--text); }
-.nav-btn {
-  padding: 8px 20px; border-radius: 20px; font-size: 13px; font-weight: 600;
-  background: var(--pri); color: #fff; border: none; cursor: pointer;
-  transition: all 0.25s; font-family: inherit;
-  box-shadow: 0 4px 16px rgba(109,138,255,0.25);
-}
-.nav-btn:hover { filter: brightness(1.12); transform: translateY(-1px); }
+@keyframes ovPop{0%{transform:scale(0);opacity:0}70%{transform:scale(1.1)}100%{transform:scale(1);opacity:1}}
+.ov h2{font-size:26px;font-weight:800;margin-bottom:8px;letter-spacing:-.5px}
+.ov p{color:var(--t2);font-size:14px;margin-bottom:36px;text-align:center;line-height:1.7}
+.ov .btn-p{padding:14px 42px;border-radius:14px;font-size:15px;font-weight:700;background:var(--p);color:#fff;border:none;cursor:pointer;font-family:inherit;box-shadow:0 8px 28px rgba(108,140,255,.3);transition:all .25s}
+.ov .btn-p:hover{transform:translateY(-2px);filter:brightness(1.1)}
 
-/* ═══════════════════════════════════════════════════
-   HERO
-   ═══════════════════════════════════════════════════ */
-.hero {
-  position: relative; z-index: 1; text-align: center;
-  padding: 160px 24px 80px; max-width: 760px; margin: 0 auto;
-}
-.hero-badge {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 6px 16px; border-radius: 20px; font-size: 12px; font-weight: 600;
-  background: rgba(109,138,255,0.08); border: 1px solid rgba(109,138,255,0.15);
-  color: var(--pri2); margin-bottom: 28px;
-}
-.hero-badge .dot {
-  width: 6px; height: 6px; border-radius: 50%; background: var(--grn);
-  box-shadow: 0 0 8px rgba(74,222,128,0.5); animation: pulse-dot 2s infinite;
-}
-@keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.3} }
-.hero h1 {
-  font-size: 56px; font-weight: 900; letter-spacing: -1.5px;
-  line-height: 1.15; margin-bottom: 20px;
-  background: linear-gradient(180deg, #fff 30%, #8b9fff 100%);
-  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-.hero p {
-  font-size: 17px; color: var(--text2); line-height: 1.7;
-  max-width: 520px; margin: 0 auto 36px;
-}
-.hero-btns { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
-.btn-lg {
-  padding: 16px 36px; border-radius: 16px; font-size: 16px;
-  font-weight: 700; border: none; cursor: pointer; font-family: inherit;
-  transition: all 0.3s cubic-bezier(0.22,0.61,0.36,1); letter-spacing: -0.2px;
-}
-.btn-primary {
-  background: var(--pri); color: #fff;
-  box-shadow: 0 8px 32px rgba(109,138,255,0.35), 0 0 0 1px rgba(109,138,255,0.2) inset;
-}
-.btn-primary:hover { transform: translateY(-2px); box-shadow: 0 16px 40px rgba(109,138,255,0.4); filter: brightness(1.08); }
-.btn-secondary {
-  background: rgba(255,255,255,0.04); color: var(--text);
-  border: 1px solid var(--border-light);
-}
-.btn-secondary:hover { background: rgba(255,255,255,0.07); border-color: #3a4870; }
+/* ════════ FOOTER ════════ */
+.ft{text-align:center;padding:50px 24px 70px;border-top:1px solid rgba(255,255,255,.02);position:relative;z-index:1}
+.ft span{font-size:12px;color:var(--t3)}
 
-/* ═══════════════════════════════════════════════════
-   PRODUCT VISUAL
-   ═══════════════════════════════════════════════════ */
-.visual {
-  position: relative; z-index: 1; max-width: 900px; margin: -20px auto 80px;
-  padding: 0 24px;
-}
-.visual-card {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--rad); padding: 48px;
-  position: relative; overflow: hidden;
-}
-.visual-card::before {
-  content: ''; position: absolute; inset: 0;
-  background: radial-gradient(ellipse 80% 50% at 50% 0%, rgba(109,138,255,0.06), transparent);
-}
-.visual-grid {
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px;
-  position: relative; z-index: 1;
-}
-.visual-item {
-  text-align: center; padding: 24px 12px; border-radius: var(--rad-sm);
-  background: var(--surface2); border: 1px solid var(--border);
-  transition: all 0.3s;
-}
-.visual-item:hover { border-color: var(--border-light); transform: translateY(-4px); }
-.visual-icon {
-  font-size: 32px; margin-bottom: 12px;
-  width: 56px; height: 56px; border-radius: 16px;
-  display: inline-flex; align-items: center; justify-content: center;
-}
-.visual-item:nth-child(1) .visual-icon { background: var(--pri-glow); }
-.visual-item:nth-child(2) .visual-icon { background: var(--grn-glow); }
-.visual-item:nth-child(3) .visual-icon { background: var(--amb-glow); }
-.visual-item:nth-child(4) .visual-icon { background: rgba(244,114,182,0.12); }
-.visual-title { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
-.visual-desc { font-size: 11px; color: var(--text3); line-height: 1.5; }
-
-/* ═══════════════════════════════════════════════════
-   SETUP SECTION
-   ═══════════════════════════════════════════════════ */
-#setup {
-  position: relative; z-index: 1; max-width: 780px; margin: 0 auto 100px;
-  padding: 0 24px;
-}
-.section-label {
-  text-align: center; font-size: 11px; color: var(--pri2); font-weight: 700;
-  text-transform: uppercase; letter-spacing: 2px; margin-bottom: 12px;
-}
-.section-title {
-  text-align: center; font-size: 32px; font-weight: 800; letter-spacing: -0.6px;
-  margin-bottom: 6px;
-}
-.section-sub {
-  text-align: center; font-size: 14px; color: var(--text2); margin-bottom: 48px;
-}
-
-.wizard {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--rad); overflow: hidden;
-  box-shadow: 0 4px 40px rgba(0,0,0,0.3);
-}
-.wizard-top {
-  display: flex; align-items: center; padding: 20px 28px;
-  border-bottom: 1px solid var(--border); gap: 16px;
-}
-.wizard-step {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 12px; color: var(--text3); font-weight: 500;
-}
-.wizard-step .num {
-  width: 24px; height: 24px; border-radius: 50%; display: flex;
-  align-items: center; justify-content: center; font-size: 11px; font-weight: 700;
-  background: var(--border); color: var(--text3);
-  transition: all 0.4s;
-}
-.wizard-step.done .num { background: var(--pri); color: #fff; }
-.wizard-step.current .num { background: var(--pri); color: #fff; box-shadow: 0 0 16px var(--pri-glow); }
-.wizard-step .sep { flex: 1; height: 1px; background: var(--border); min-width: 20px; }
-.wizard-step.done .sep { background: var(--pri); opacity: 0.3; }
-
-.wizard-body { padding: 36px 40px; min-height: 320px; }
-.wb-step { display: none; animation: fadeSlide 0.45s ease-out; }
-.wb-step.active { display: block; }
-@keyframes fadeSlide { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
-
-.wb-title { font-size: 20px; font-weight: 700; margin-bottom: 6px; letter-spacing: -0.3px; }
-.wb-sub { font-size: 13px; color: var(--text2); margin-bottom: 28px; }
-
-.field { margin-bottom: 20px; }
-.field-label { font-size: 12px; color: var(--text3); font-weight: 600; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
-
-.time-row { display: flex; align-items: center; gap: 12px; }
-.time-box {
-  background: var(--surface2); border: 1px solid var(--border); border-radius: var(--rad-xs);
-  padding: 12px 16px; font-size: 16px; color: var(--text); font-family: inherit;
-  width: 110px; text-align: center; font-weight: 600; outline: none;
-  transition: all 0.2s;
-}
-.time-box:focus { border-color: var(--pri); box-shadow: 0 0 0 3px var(--pri-glow); }
-.time-arrow { color: var(--text3); font-size: 18px; }
-
-.sel-wrap { position: relative; }
-.sel-wrap select {
-  width: 100%; background: var(--surface2); border: 1px solid var(--border);
-  color: var(--text); font-size: 14px; padding: 12px 40px 12px 14px;
-  border-radius: var(--rad-xs); outline: none; font-family: inherit;
-  appearance: none; cursor: pointer; font-weight: 500; transition: all 0.2s;
-}
-.sel-wrap select:focus { border-color: var(--pri); box-shadow: 0 0 0 3px var(--pri-glow); }
-.sel-wrap::after {
-  content: ''; position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
-  border: 5px solid transparent; border-top: 6px solid var(--text3); pointer-events: none;
-}
-
-.pill-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.pill-opt {
-  background: var(--surface2); border: 1.5px solid var(--border); border-radius: var(--rad-sm);
-  padding: 24px; cursor: pointer; transition: all 0.3s; text-align: center; position: relative;
-}
-.pill-opt:hover { border-color: var(--border-light); }
-.pill-opt.sel { border-color: var(--pri); background: rgba(109,138,255,0.06); }
-.pill-opt .chk {
-  position: absolute; top: 12px; right: 14px; width: 22px; height: 22px;
-  border-radius: 50%; background: var(--pri); color: #fff; display: flex;
-  align-items: center; justify-content: center; font-size: 12px;
-  opacity: 0; transform: scale(0.6); transition: all 0.3s;
-}
-.pill-opt.sel .chk { opacity: 1; transform: scale(1); }
-.pill-emoji { font-size: 36px; margin-bottom: 10px; }
-.pill-name { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
-.pill-desc { font-size: 12px; color: var(--text2); line-height: 1.5; }
-.pill-opt input { display: none; }
-
-.tog-row {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 16px; background: var(--surface2); border-radius: var(--rad-xs);
-  margin-bottom: 8px;
-}
-.tog-info { flex: 1; }
-.tog-label { font-size: 14px; font-weight: 600; }
-.tog-desc { font-size: 11px; color: var(--text3); margin-top: 2px; }
-.tog-sw {
-  width: 46px; height: 26px; border-radius: 13px; background: var(--border);
-  cursor: pointer; flex-shrink: 0; position: relative; transition: background 0.3s;
-}
-.tog-sw.on { background: var(--pri); }
-.tog-sw::after {
-  content: ''; position: absolute; top: 2px; left: 2px;
-  width: 22px; height: 22px; border-radius: 50%; background: #fff;
-  transition: transform 0.3s cubic-bezier(0.22,0.61,0.36,1);
-  box-shadow: 0 2px 6px rgba(0,0,0,0.2);
-}
-.tog-sw.on::after { transform: translateX(20px); }
-
-.path-chips { display: flex; gap: 8px; flex-wrap: wrap; }
-.path-chip {
-  padding: 10px 16px; border-radius: 20px; font-size: 13px;
-  background: var(--surface2); border: 1px solid var(--border);
-  color: var(--text2); font-family: 'SF Mono','Fira Code',monospace;
-  display: flex; align-items: center; gap: 6px;
-}
-
-.gauge-area { margin-top: 4px; }
-.gauge-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
-.gauge-val { font-size: 28px; font-weight: 800; letter-spacing: -0.5px; }
-.gauge-unit { font-size: 13px; color: var(--text3); margin-left: 4px; }
-.gauge-track {
-  height: 10px; border-radius: 5px; background: var(--surface2);
-  position: relative; cursor: pointer; overflow: visible;
-}
-.gauge-fill {
-  height: 100%; border-radius: 5px; transition: width 0.3s;
-  background: linear-gradient(90deg, var(--grn), var(--amb) 55%, var(--red));
-}
-.gauge-thumb {
-  position: absolute; top: 50%; transform: translate(-50%,-50%);
-  width: 24px; height: 24px; border-radius: 50%;
-  background: #fff; border: 3px solid var(--pri);
-  box-shadow: 0 3px 14px rgba(0,0,0,0.4); cursor: grab;
-  transition: left 0.3s; z-index: 2;
-}
-.gauge-ticks { display: flex; justify-content: space-between; font-size: 10px; color: var(--text3); margin-top: 6px; }
-
-.summary-grid {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
-  background: var(--surface2); border-radius: var(--rad-sm); padding: 20px;
-}
-.sr { display: flex; justify-content: space-between; font-size: 13px; padding: 4px 0; }
-.sr-key { color: var(--text3); }
-.sr-val { color: var(--text); font-weight: 600; }
-
-.wizard-foot { padding: 20px 40px; border-top: 1px solid var(--border); display: flex; gap: 12px; }
-.wf-back {
-  width: 48px; height: 48px; border-radius: 14px; background: transparent;
-  border: 1px solid var(--border); color: var(--text2); cursor: pointer;
-  font-size: 18px; transition: all 0.2s; display: flex; align-items: center; justify-content: center;
-}
-.wf-back:hover { border-color: var(--border-light); color: var(--text); }
-.wf-next {
-  flex: 1; height: 48px; border-radius: 14px; background: var(--pri); color: #fff;
-  border: none; font-size: 15px; font-weight: 700; cursor: pointer; font-family: inherit;
-  transition: all 0.25s; box-shadow: 0 6px 24px rgba(109,138,255,0.2);
-}
-.wf-next:hover { filter: brightness(1.1); transform: translateY(-1px); }
-
-/* ═══════════════════════════════════════════════════
-   SUCCESS
-   ═══════════════════════════════════════════════════ */
-.overlay {
-  position: fixed; inset: 0; z-index: 200; display: none;
-  background: rgba(5,7,13,0.92); backdrop-filter: blur(12px);
-  align-items: center; justify-content: center; flex-direction: column;
-}
-.overlay.show { display: flex; }
-.overlay-icon {
-  width: 88px; height: 88px; border-radius: 50%;
-  background: linear-gradient(135deg, rgba(74,222,128,0.15), rgba(74,222,128,0.05));
-  display: flex; align-items: center; justify-content: center;
-  font-size: 44px; margin-bottom: 28px;
-  animation: popIn 0.7s cubic-bezier(0.16,1,0.3,1);
-}
-@keyframes popIn {
-  0% { transform: scale(0); opacity: 0; }
-  70% { transform: scale(1.1); }
-  100% { transform: scale(1); opacity: 1; }
-}
-.overlay h2 { font-size: 26px; font-weight: 800; margin-bottom: 8px; letter-spacing: -0.5px; }
-.overlay p { color: var(--text2); font-size: 14px; margin-bottom: 36px; text-align: center; line-height: 1.7; }
-.overlay-btn {
-  padding: 14px 48px; border-radius: 14px; font-size: 15px; font-weight: 700;
-  background: var(--pri); color: #fff; border: none; cursor: pointer;
-  font-family: inherit; box-shadow: 0 8px 28px rgba(109,138,255,0.3);
-  transition: all 0.25s;
-}
-.overlay-btn:hover { transform: translateY(-2px); filter: brightness(1.1); }
-
-/* ═══════════════════════════════════════════════════
-   FOOTER
-   ═══════════════════════════════════════════════════ */
-.footer {
-  position: relative; z-index: 1; text-align: center;
-  padding: 40px 24px 60px; border-top: 1px solid rgba(255,255,255,0.03);
-}
-.footer span { font-size: 12px; color: var(--text3); }
-
-@media (max-width: 640px) {
-  .hero h1 { font-size: 34px; }
-  .hero p { font-size: 14px; }
-  .visual-grid { grid-template-columns: 1fr 1fr; }
-  .pill-2 { grid-template-columns: 1fr; }
-  .summary-grid { grid-template-columns: 1fr; }
-  .wizard-body { padding: 24px 20px; }
-  .wizard-foot { padding: 16px 20px; }
-  .nav { padding: 12px 16px; }
-  .nav-links { display: none; }
+@media(max-width:640px){
+  .nav{padding:12px 16px}.nav-r a{display:none}
+  .hero h1{font-size:34px}.feat-grid{grid-template-columns:1fr 1fr}
+  .stat-line{gap:30px;flex-wrap:wrap}.pl2{grid-template-columns:1fr}
+  .wiz-body{padding:24px 20px}.wiz-foot{padding:14px 20px}
+  .summ{grid-template-columns:1fr}
 }
 </style>
 </head>
 <body>
-
-<div class="bg-grid"></div>
-<div class="bg-glow g1"></div>
-<div class="bg-glow g2"></div>
+<div class="cursor-glow" id="glow"></div>
 
 <nav class="nav">
-  <div class="nav-brand">
-    <div class="nav-logo">🛏️</div>
-    <span class="nav-name">小安 XiaoAn</span>
-  </div>
-  <div class="nav-links">
-    <a class="nav-link" href="#features">功能</a>
-    <a class="nav-link" href="#setup">配置</a>
-    <a class="nav-link" href="#">文档</a>
-    <button class="nav-btn" onclick="document.getElementById('setup').scrollIntoView({behavior:'smooth'})">开始设置</button>
+  <div class="nav-l"><div class="nav-icon">🛏️</div><span class="nav-name">小安 XiaoAn</span></div>
+  <div class="nav-r">
+    <a href="#features">功能</a><a href="#setup">配置</a><a href="#">文档</a>
+    <button class="nav-cta" onclick="document.getElementById('setup').scrollIntoView({behavior:'smooth'})">开始设置</button>
   </div>
 </nav>
 
 <section class="hero">
-  <div class="hero-badge"><span class="dot"></span> 第二代 · 智能睡眠伴侣</div>
+  <div class="float-pill p1"></div><div class="float-pill p2"></div>
+  <div class="hero-badge"><span class="live"></span> 第二代 · 智能睡眠伴侣</div>
   <h1>你的每一夜<br>都值得被认真对待</h1>
-  <p>从躺下的那一刻起，小安就开始工作——感知你的睡姿、调节枕头高度、在你说话时温柔回应。它不只是枕头，是懂你的枕边人。</p>
+  <p>从躺下的那一刻起，小安就开始工作。感知你的睡姿、调节枕头高度、在你说话时温柔回应。它不只是枕头，是懂你的枕边人。</p>
   <div class="hero-btns">
-    <button class="btn-lg btn-primary" onclick="document.getElementById('setup').scrollIntoView({behavior:'smooth'})">✨ 开始个性化设置</button>
-    <button class="btn-lg btn-secondary">了解更多</button>
+    <button class="btn btn-p" onclick="document.getElementById('setup').scrollIntoView({behavior:'smooth'})">✨ 开始个性化设置</button>
+    <button class="btn btn-s">了解更多</button>
   </div>
 </section>
 
-<section class="visual" id="features">
-  <div class="visual-card">
-    <div class="visual-grid">
-      <div class="visual-item"><div class="visual-icon">🎙️</div><div class="visual-title">语音对话</div><div class="visual-desc">自然语音交互<br>支持中英文混合</div></div>
-      <div class="visual-item"><div class="visual-icon">📊</div><div class="visual-title">睡眠感知</div><div class="visual-desc">压力+温湿度+光照<br>16 维实时监测</div></div>
-      <div class="visual-item"><div class="visual-icon">🛡️</div><div class="visual-title">智能安全</div><div class="visual-desc">气压上限+急停<br>多级硬件保护</div></div>
-      <div class="visual-item"><div class="visual-icon">🧠</div><div class="visual-title">AI 决策</div><div class="visual-desc">DeepSeek 驱动<br>主动问候+策略调节</div></div>
-    </div>
+<section class="sec" id="features" style="padding-top:0">
+  <div class="feat-grid">
+    <div class="feat-card"><div class="feat-icon">🎙️</div><div class="feat-title">语音对话</div><div class="feat-desc">自然语音交互<br>支持中英文混合</div></div>
+    <div class="feat-card"><div class="feat-icon">📊</div><div class="feat-title">睡眠感知</div><div class="feat-desc">压力+温湿度+光照<br>16 维实时监测</div></div>
+    <div class="feat-card"><div class="feat-icon">🛡️</div><div class="feat-title">智能安全</div><div class="feat-desc">气压上限+急停<br>多级硬件保护</div></div>
+    <div class="feat-card"><div class="feat-icon">🧠</div><div class="feat-title">AI 决策</div><div class="feat-desc">DeepSeek 驱动<br>主动问候+策略调节</div></div>
+  </div>
+  <div class="stat-line" style="margin-top:60px">
+    <div class="stat"><h3>0.6 kPa</h3><p>最低感知气压</p></div>
+    <div class="stat"><h3>&lt;500ms</h3><p>语音响应延迟</p></div>
+    <div class="stat"><h3>8 个</h3><p>环境传感器</p></div>
+    <div class="stat"><h3>24/7</h3><p>全天候运行</p></div>
   </div>
 </section>
 
-<section id="setup">
-  <div class="section-label">个性化配置</div>
-  <div class="section-title">2 分钟，定制你的小安</div>
-  <div class="section-sub">所有设置云端同步，随时可修改</div>
-
-  <div class="wizard">
-    <div class="wizard-top" id="wizTop">
-      <div class="wizard-step current" data-s="0"><span class="num">1</span> 习惯</div>
-      <div class="wizard-step" data-s="1"><span class="sep"></span><span class="num">2</span> 个性</div>
-      <div class="wizard-step" data-s="2"><span class="sep"></span><span class="num">3</span> 安全</div>
-      <div class="wizard-step" data-s="3"><span class="sep"></span><span class="num">4</span> 确认</div>
-    </div>
-
-    <div class="wizard-body">
-      <!-- Step 1 -->
-      <div class="wb-step active" data-s="0">
-        <div class="wb-title">🌙 睡眠习惯</div>
-        <div class="wb-sub">告诉小安你的作息，它会自动调整问候和勿扰时机</div>
-        <div class="field"><div class="field-label">就寝时间</div>
-          <div class="time-row">
-            <input type="time" class="time-box" id="s1_sleep" value="23:00">
-            <span class="time-arrow">→</span>
-            <input type="time" class="time-box" id="s1_wake" value="07:30">
-            <span style="font-size:13px;color:var(--text3);margin-left:4px">起床</span>
+<section class="sec" id="setup">
+  <div class="wiz-wrap">
+    <div class="wiz-label">个性化配置</div>
+    <div class="wiz-title">2 分钟，定制你的小安</div>
+    <div class="wiz-sub">所有设置云端同步，随时可修改</div>
+    <div class="wiz">
+      <div class="wiz-head" id="wizHead">
+        <div class="ws cur" data-w="0"><span class="n">1</span>习惯</div>
+        <div class="ws" data-w="1"><div class="line"></div><span class="n">2</span>个性</div>
+        <div class="ws" data-w="2"><div class="line"></div><span class="n">3</span>安全</div>
+        <div class="ws" data-w="3"><div class="line"></div><span class="n">4</span>确认</div>
+      </div>
+      <div class="wiz-body">
+        <div class="wb on" data-w="0">
+          <h3>🌙 睡眠习惯</h3><div class="sub">告诉小安你的作息，自动调整问候与勿扰</div>
+          <div class="fd"><label>就寝时间</label><div class="tm"><input type="time" id="s1a" value="23:00"><span class="arr">→</span><input type="time" id="s1b" value="07:30"><span style="font-size:12px;color:var(--t3);margin-left:4px">起床</span></div></div>
+          <div class="fd"><label>居住城市</label><div class="sel-w"><select id="s1c"><option value="beijing">北京</option><option value="shanghai">上海</option><option value="shenzhen">深圳</option><option value="chengdu">成都</option><option value="chongqing" selected>重庆</option><option value="hangzhou">杭州</option><option value="guangzhou">广州</option></select></div></div>
+        </div>
+        <div class="wb" data-w="1">
+          <h3>💬 AI 性格 & 唤醒</h3><div class="sub">选你喜欢的聊天风格和叫醒方式</div>
+          <div class="fd"><label>AI 性格</label><div class="pl2" id="personality">
+            <label class="plo sel" onclick="selP(this)"><input type="radio" name="p" value="gentle" checked><div class="ck">✓</div><div class="em">🌸</div><div class="nm">温柔陪伴型</div><div class="ds">话多不啰嗦，语气慵懒<br>像枕边的朋友</div></label>
+            <label class="plo" onclick="selP(this)"><input type="radio" name="p" value="concise"><div class="ck">✓</div><div class="em">⚡</div><div class="nm">简洁助理型</div><div class="ds">话少精炼，直奔主题<br>不多说一句废话</div></label>
+          </div></div>
+          <div class="fd"><label>唤醒方式</label>
+            <div class="tgl"><div class="tgl-info"><div class="tl">🎵 轻音乐</div><div class="td">钢琴曲渐强播放</div></div><div class="sw on" onclick="this.classList.toggle('on')"></div></div>
+            <div class="tgl"><div class="tgl-info"><div class="tl">💡 渐亮灯光</div><div class="td">模拟日出 30 分钟渐变</div></div><div class="sw" onclick="this.classList.toggle('on')"></div></div>
+            <div class="tgl"><div class="tgl-info"><div class="tl">🫧 气囊轻提醒</div><div class="td">枕头微微起伏唤醒</div></div><div class="sw on" onclick="this.classList.toggle('on')"></div></div>
           </div>
         </div>
-        <div class="field"><div class="field-label">居住城市</div>
-          <div class="sel-wrap"><select id="s1_city"><option value="beijing">北京</option><option value="shanghai">上海</option><option value="shenzhen">深圳</option><option value="chengdu">成都</option><option value="chongqing" selected>重庆</option><option value="hangzhou">杭州</option><option value="guangzhou">广州</option></select></div>
-        </div>
-      </div>
-
-      <!-- Step 2 -->
-      <div class="wb-step" data-s="1">
-        <div class="wb-title">💬 AI 性格 & 闹钟</div>
-        <div class="wb-sub">选一个你喜欢的聊天风格和唤醒方式</div>
-        <div class="field"><div class="field-label">AI 性格</div>
-          <div class="pill-2" id="personality">
-            <label class="pill-opt sel" onclick="selPill(this)"><input type="radio" name="personality" value="gentle" checked><div class="chk">✓</div><div class="pill-emoji">🌸</div><div class="pill-name">温柔陪伴型</div><div class="pill-desc">话多不啰嗦，语气慵懒<br>像枕边的朋友，会主动关心</div></label>
-            <label class="pill-opt" onclick="selPill(this)"><input type="radio" name="personality" value="concise"><div class="chk">✓</div><div class="pill-emoji">⚡</div><div class="pill-name">简洁助理型</div><div class="pill-desc">话少精炼，直奔主题<br>不多说一句废话</div></label>
+        <div class="wb" data-w="2">
+          <h3>🛡️ 隐私 & 安全</h3><div class="sub">你的数据你做主，硬件安全防线</div>
+          <div class="fd"><label>PC Agent 可读目录</label><div class="chips"><span class="chip">📁 demo_mail/</span><span class="chip">📁 demo_docs/</span></div></div>
+          <div class="fd"><label>气压安全上限</label>
+            <div class="g-h"><span style="font-size:12px;color:var(--t2)">上限值</span><span><span class="g-v" id="gv">5.0</span><span class="g-u">kPa</span></span></div>
+            <div class="g-tr" id="gTrack"><div class="g-f" style="width:50%"></div><div class="g-tb" style="left:50%"></div></div>
+            <div class="g-tk"><span>0</span><span>2.5</span><span>5.0</span><span>7.5</span><span>10.0</span></div>
+            <input type="range" min="1" max="10" step=".1" value="5.0" id="gS" style="display:none">
           </div>
+          <div class="fd"><label>夜间勿扰</label><div class="tm"><input type="time" id="s3a" value="23:00"><span class="arr">→</span><input type="time" id="s3b" value="07:00"></div></div>
         </div>
-        <div class="field"><div class="field-label">唤醒方式</div>
-          <div class="tog-row"><div class="tog-info"><div class="tog-label">🎵 轻音乐</div><div class="tog-desc">舒缓钢琴曲，渐强播放</div></div><div class="tog-sw on" onclick="this.classList.toggle('on')"></div></div>
-          <div class="tog-row"><div class="tog-info"><div class="tog-label">💡 渐亮灯光</div><div class="tog-desc">模拟日出，30 分钟渐变</div></div><div class="tog-sw" onclick="this.classList.toggle('on')"></div></div>
-          <div class="tog-row"><div class="tog-info"><div class="tog-label">🫧 气囊轻提醒</div><div class="tog-desc">枕头微微起伏，轻柔唤醒</div></div><div class="tog-sw on" onclick="this.classList.toggle('on')"></div></div>
-        </div>
-      </div>
-
-      <!-- Step 3 -->
-      <div class="wb-step" data-s="2">
-        <div class="wb-title">🛡️ 隐私 & 安全</div>
-        <div class="wb-sub">你的数据你做主，硬件安全防线</div>
-        <div class="field"><div class="field-label">PC Agent 可读目录</div>
-          <div class="path-chips"><span class="path-chip">📁 demo_mail/</span><span class="path-chip">📁 demo_docs/</span></div>
-        </div>
-        <div class="field"><div class="field-label">气压安全上限</div>
-          <div class="gauge-area">
-            <div class="gauge-head"><span style="font-size:13px;color:var(--text2)">当前上限</span><span><span class="gauge-val" id="gVal">5.0</span><span class="gauge-unit">kPa</span></span></div>
-            <div class="gauge-track" id="gTrack">
-              <div class="gauge-fill" style="width:50%"></div>
-              <div class="gauge-thumb" style="left:50%"></div>
-            </div>
-            <div class="gauge-ticks"><span>0</span><span>2.5</span><span>5.0</span><span>7.5</span><span>10.0</span></div>
-            <input type="range" min="1" max="10" step="0.1" value="5.0" id="gSlider" style="display:none">
-          </div>
-        </div>
-        <div class="field"><div class="field-label">夜间勿扰</div>
-          <div class="time-row"><input type="time" class="time-box" id="s3_dnd1" value="23:00"><span class="time-arrow">→</span><input type="time" class="time-box" id="s3_dnd2" value="07:00"></div>
+        <div class="wb" data-w="3">
+          <h3>✅ 确认配置</h3><div class="sub">检查无误后保存</div>
+          <div class="summ" id="summGrid"></div>
         </div>
       </div>
-
-      <!-- Step 4 -->
-      <div class="wb-step" data-s="3">
-        <div class="wb-title">✅ 确认配置</div>
-        <div class="wb-sub">检查无误后保存，随时可修改</div>
-        <div class="summary-grid" id="summaryGrid"></div>
+      <div class="wiz-foot">
+        <button class="wf-b" onclick="prev()">←</button>
+        <button class="wf-n" id="nxtBtn" onclick="next()">下一步</button>
       </div>
-    </div>
-
-    <div class="wizard-foot">
-      <button class="wf-back" onclick="prev()">←</button>
-      <button class="wf-next" id="nextBtn" onclick="next()">下一步</button>
     </div>
   </div>
 </section>
 
-<footer class="footer"><span>© 2026 XiaoAn · 智能睡眠伴侣</span></footer>
+<footer class="ft"><span>© 2026 XiaoAn · 智能睡眠伴侣</span></footer>
 
-<div class="overlay" id="successOverlay">
-  <div class="overlay-icon">✨</div>
+<div class="ov" id="successOv">
+  <div class="ov-ic">✨</div>
   <h2>设置完成，小安已就绪</h2>
   <p>今晚躺下时，你会听到第一声问候<br>晚安，好梦 🌙</p>
-  <button class="overlay-btn" onclick="document.getElementById('successOverlay').classList.remove('show')">开始使用</button>
+  <button class="btn-p" onclick="document.getElementById('successOv').classList.remove('on')">开始使用</button>
 </div>
 
 <script>
-let step = 0;
-const total = 4;
+/* ── Mouse glow ── */
+const glow=document.getElementById('glow');
+document.addEventListener('mousemove',e=>{glow.style.left=e.clientX+'px';glow.style.top=e.clientY+'px'});
 
-function updSteps() {
-  document.querySelectorAll('#wizTop .wizard-step').forEach((el,i) => {
-    el.classList.remove('done','current');
-    if (i < step) el.classList.add('done');
-    if (i === step) el.classList.add('current');
+/* ── Card hover glow ── */
+document.querySelectorAll('.feat-card').forEach(c=>{
+  c.addEventListener('mousemove',e=>{
+    const r=c.getBoundingClientRect();
+    c.style.setProperty('--mx',(e.clientX-r.left)+'px');
+    c.style.setProperty('--my',(e.clientY-r.top)+'px');
   });
-  document.getElementById('nextBtn').textContent = step === total - 1 ? '✓ 完成设置' : '下一步';
+});
+
+/* ── Wizard ── */
+let ws=0,wt=4;
+function upWs(){
+  document.querySelectorAll('#wizHead .ws').forEach((el,i)=>{
+    el.classList.remove('done','cur');
+    if(i<ws)el.classList.add('done');
+    if(i===ws)el.classList.add('cur');
+  });
+  document.getElementById('nxtBtn').textContent=ws===wt-1?'✓ 完成设置':'下一步';
+}
+function showW(n){
+  if(n<0||n>=wt)return;
+  document.querySelectorAll('.wb').forEach(s=>s.classList.remove('on'));
+  const t=document.querySelector(`.wb[data-w="${n}"]`);
+  if(t){t.classList.add('on');t.style.animation='none';t.offsetHeight;t.style.animation=''}
+  ws=n;upWs();if(n===3)upSumm();
+}
+function next(){if(ws===wt-1){finish();return}showW(ws+1)}
+function prev(){showW(ws-1)}
+function selP(el){
+  el.parentElement.querySelectorAll('.plo').forEach(c=>c.classList.remove('sel'));
+  el.classList.add('sel');el.querySelector('input').checked=true;
 }
 
-function show(n) {
-  if (n < 0 || n >= total) return;
-  document.querySelectorAll('.wb-step').forEach(s => s.classList.remove('active'));
-  const t = document.querySelector(`.wb-step[data-s="${n}"]`);
-  if (t) { t.classList.add('active'); t.style.animation = 'none'; t.offsetHeight; t.style.animation = ''; }
-  step = n; updSteps();
-  if (n === 3) updSummary();
+/* ── Gauge drag ── */
+const gTr=document.getElementById('gTrack'),gF=gTr.querySelector('.g-f'),gTb=gTr.querySelector('.g-tb'),gV=document.getElementById('gv'),gS=document.getElementById('gS');
+let drg=false;
+function upG(cx){
+  const r=gTr.getBoundingClientRect(),p=Math.max(0,Math.min(1,(cx-r.left)/r.width)),v=Math.round(p*100)/10;
+  gF.style.width=(v*10)+'%';gTb.style.left=(v*10)+'%';gV.textContent=v.toFixed(1);gS.value=v;
+}
+gTr.addEventListener('mousedown',e=>{drg=true;upG(e.clientX)});
+gTr.addEventListener('touchstart',e=>{drg=true;upG(e.touches[0].clientX)});
+document.addEventListener('mousemove',e=>{if(drg)upG(e.clientX)});
+document.addEventListener('touchmove',e=>{if(drg)upG(e.touches[0].clientX)});
+document.addEventListener('mouseup',()=>drg=false);
+document.addEventListener('touchend',()=>drg=false);
+
+/* ── Summary ── */
+function upSumm(){
+  const sleep=document.getElementById('s1a').value+' → '+document.getElementById('s1b').value;
+  const ct=document.getElementById('s1c');const cn=ct.options[ct.selectedIndex].text;
+  const pr=document.querySelector('input[name="p"]:checked').value==='gentle'?'🌸 温柔陪伴':'⚡ 简洁助理';
+  const al=[];document.querySelectorAll('.sw.on').forEach((t,i)=>al.push(['🎵轻音乐','💡渐亮灯光','🫧气囊提醒'][i]));
+  const ps=parseFloat(gS.value||5);const dnd=document.getElementById('s3a').value+' → '+document.getElementById('s3b').value;
+  document.getElementById('summGrid').innerHTML=[
+    ['睡眠',sleep],['城市',cn],['AI性格',pr],['闹钟',al.join(' · ')||'无'],
+    ['P C Agent','demo_mail/ demo_docs/'],['气压上限',ps.toFixed(1)+' kPa'],['勿扰',dnd],['急停','语音触发']
+  ].map(([k,v])=>`<div class="sr"><span class="sk">${k}</span><span class="sv">${v}</span></div>`).join('');
 }
 
-function next() {
-  if (step === total - 1) { finish(); return; }
-  show(step + 1);
-}
-function prev() { show(step - 1); }
-function selPill(el) {
-  el.parentElement.querySelectorAll('.pill-opt').forEach(c => c.classList.remove('sel'));
-  el.classList.add('sel'); el.querySelector('input').checked = true;
-}
-
-// Gauge
-const gTrack = document.getElementById('gTrack');
-const gFill = gTrack.querySelector('.gauge-fill');
-const gThumb = gTrack.querySelector('.gauge-thumb');
-const gVal = document.getElementById('gVal');
-const gSlider = document.getElementById('gSlider');
-let drag = false;
-function upGauge(cx) {
-  const r = gTrack.getBoundingClientRect();
-  let p = Math.max(0, Math.min(1, (cx - r.left) / r.width));
-  const v = Math.round(p * 100) / 10;
-  gFill.style.width = (v * 10) + '%';
-  gThumb.style.left = (v * 10) + '%';
-  gVal.textContent = v.toFixed(1);
-  gSlider.value = v;
-}
-gTrack.addEventListener('mousedown', e => { drag = true; upGauge(e.clientX); });
-gTrack.addEventListener('touchstart', e => { drag = true; upGauge(e.touches[0].clientX); });
-document.addEventListener('mousemove', e => { if (drag) upGauge(e.clientX); });
-document.addEventListener('touchmove', e => { if (drag) upGauge(e.touches[0].clientX); });
-document.addEventListener('mouseup', () => drag = false);
-document.addEventListener('touchend', () => drag = false);
-
-function updSummary() {
-  const sleep = document.getElementById('s1_sleep').value + ' → ' + document.getElementById('s1_wake').value;
-  const city = document.getElementById('s1_city');
-  const cname = city.options[city.selectedIndex].text;
-  const pers = document.querySelector('input[name="personality"]:checked').value === 'gentle' ? '🌸 温柔陪伴' : '⚡ 简洁助理';
-  const al = [];
-  document.querySelectorAll('.tog-sw.on').forEach((t,i) => al.push(['🎵 轻音乐','💡 渐亮灯光','🫧 气囊轻提醒'][i]));
-  const pres = parseFloat(gSlider.value || 5.0);
-  const dnd = document.getElementById('s3_dnd1').value + ' → ' + document.getElementById('s3_dnd2').value;
-  document.getElementById('summaryGrid').innerHTML = [
-    ['睡眠', sleep], ['城市', cname], ['AI 性格', pers],
-    ['闹钟', al.join(' · ') || '无'], ['PC Agent', 'demo_mail/ demo_docs/'],
-    ['气压上限', pres.toFixed(1) + ' kPa'], ['勿扰', dnd], ['急停', '语音触发']
-  ].map(([k,v]) => `<div class="sr"><span class="sr-key">${k}</span><span class="sr-val">${v}</span></div>`).join('');
-}
-
-function finish() {
-  const cfg = {
-    sleep: { start: document.getElementById('s1_sleep').value, end: document.getElementById('s1_wake').value },
-    location: document.getElementById('s1_city').value,
-    personality: document.querySelector('input[name="personality"]:checked').value,
-    alarm: (() => { const a = []; document.querySelectorAll('.tog-sw.on').forEach((t,i) => a.push(['music','light','airbag'][i])); return a; })(),
-    pc_agent: { allowed_paths: ["demo_mail/", "demo_docs/"] },
-    safety: { pressure_max_kpa: parseFloat(gSlider.value || 5.0), dnd_start: document.getElementById('s3_dnd1').value, dnd_end: document.getElementById('s3_dnd2').value }
+function finish(){
+  const cfg={
+    sleep:{start:document.getElementById('s1a').value,end:document.getElementById('s1b').value},
+    location:document.getElementById('s1c').value,
+    personality:document.querySelector('input[name="p"]:checked').value,
+    alarm:(()=>{const a=[];document.querySelectorAll('.sw.on').forEach((t,i)=>a.push(['music','light','airbag'][i]));return a;})(),
+    pc_agent:{allowed_paths:['demo_mail/','demo_docs/']},
+    safety:{pressure_max_kpa:parseFloat(gS.value||5),dnd_start:document.getElementById('s3a').value,dnd_end:document.getElementById('s3b').value}
   };
-  console.log('📦 配置:', JSON.stringify(cfg, null, 2));
-  // 部署后: fetch('/api/config/save', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(cfg) });
-  document.getElementById('successOverlay').classList.add('show');
+  console.log('📦',JSON.stringify(cfg,null,2));
+  document.getElementById('successOv').classList.add('on');
 }
 </script>
 </body>
