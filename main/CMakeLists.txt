@@ -11,6 +11,7 @@ idf_component_register(
         "screen_anim.c"
         "lcd_ili9488.c"
         "avatar_rgb666_frames.c"
+        "font_gb2312_16.c"
     INCLUDE_DIRS "."
     EMBED_FILES
         "avatar_base_rgb666.bin"
@@ -26,6 +27,7 @@ idf_component_register(
         "avatar_head_rgb666_frame_9.bin"
         "avatar_head_rgb666_frame_10.bin"
         "avatar_head_rgb666_frame_11.bin"
+        "font_gb2312_16.bin"
     REQUIRES
         esp_wifi
         esp_event

@@ -11,6 +11,7 @@
 #include "cJSON.h"
 #include "audio_out.h"
 #include "pump_driver.h"
+#include "screen_anim.h"
 #include "opus.h"
 #include "mbedtls/base64.h"
 #include "sensors.h"
@@ -140,11 +141,13 @@ static portMUX_TYPE s_event_spinlock = portMUX_INITIALIZER_UNLOCKED;
 #define AUDIO_QUEUE_SEND_TIMEOUT_MS 500
 #define AUDIO_END_SEND_TIMEOUT_MS 5000
 #define AUDIO_PLAYBACK_DRAIN_MS 80
+#define AUDIO_SUBTITLE_MAX_BYTES 192
 
 // 队列元素：一个 Opus 编码帧
 typedef struct {
     uint8_t *data;   // heap 分配，audio task 负责 free
     size_t   len;
+    char    *subtitle;
 } audio_chunk_t;
 
 static void begin_tts_stream(void)
@@ -216,6 +219,38 @@ static bool enqueue_opus_frame(const uint8_t *data, size_t len, const char *sour
 //  负责：Opus 解码 → Mono→Stereo → I2S 输出
 //  借鉴 xiaozhi：TX 常开，空闲写静音填充，不产生开关跳变
 // ============================================================
+static bool enqueue_subtitle_marker(const char *text)
+{
+    if (!s_audio_queue || !text || text[0] == '\0') {
+        return false;
+    }
+
+    size_t len = strlen(text);
+    if (len >= AUDIO_SUBTITLE_MAX_BYTES) {
+        len = AUDIO_SUBTITLE_MAX_BYTES - 1;
+    }
+
+    char *copy = malloc(len + 1);
+    if (!copy) {
+        return false;
+    }
+    memcpy(copy, text, len);
+    copy[len] = '\0';
+
+    audio_chunk_t marker = {
+        .data = NULL,
+        .len = 1,
+        .subtitle = copy,
+    };
+    if (xQueueSend(s_audio_queue, &marker,
+                   pdMS_TO_TICKS(AUDIO_QUEUE_SEND_TIMEOUT_MS)) == pdTRUE) {
+        return true;
+    }
+
+    free(copy);
+    return false;
+}
+
 static void audio_player_task(void *arg)
 {
     // 大数组在这个任务栈里（不影响 WebSocket 任务）
@@ -239,6 +274,12 @@ static void audio_player_task(void *arg)
                 audio_out_write((const uint8_t *)stereo, sizeof(stereo));
                 played_frames = 0;
             }
+            continue;
+        }
+
+        if (chunk.subtitle) {
+            screen_anim_set_subtitle("小安", chunk.subtitle);
+            free(chunk.subtitle);
             continue;
         }
 
@@ -370,6 +411,7 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                             cJSON *text = cJSON_GetObjectItem(json, "text");
                             if (text && cJSON_IsString(text)) {
                                 printf("[小安] %s\n", text->valuestring);
+                                enqueue_subtitle_marker(text->valuestring);
                             }
                         }
                     }
@@ -417,6 +459,7 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     cJSON *text = cJSON_GetObjectItem(json, "text");
                     if (text && cJSON_IsString(text)) {
                         printf("[你] %s\n", text->valuestring);
+                        screen_anim_set_subtitle("你", text->valuestring);
                     }
                 }
                 else if (strcmp(type->valuestring, "pillow_cmd") == 0) {

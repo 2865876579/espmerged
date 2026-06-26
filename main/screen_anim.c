@@ -1,10 +1,12 @@
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "avatar_rgb666_frames.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "font_gb2312_16.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lcd_ili9488.h"
@@ -26,6 +28,12 @@
 #define STATUS_PANEL_Y 426
 #define STATUS_PANEL_W LCD_ILI9488_H_RES
 #define STATUS_PANEL_H 34
+#define SUBTITLE_SPEAKER_BYTES 16
+#define SUBTITLE_TEXT_BYTES 192
+#define SUBTITLE_LINES 2
+#define SUBTITLE_MAX_GLYPHS_PER_LINE 20
+#define SUBTITLE_GLYPH_STEP_X 15
+#define SUBTITLE_MARGIN_X 10
 
 #if ENABLE_AMBIENT_FX
 #define AMBIENT_TILE_MAX 48
@@ -41,6 +49,50 @@ static const uint16_t s_frame_durations_ms[AVATAR_HEAD_FRAME_COUNT] = {
 };
 
 static uint8_t *s_tx_buf;
+
+static portMUX_TYPE s_subtitle_lock = portMUX_INITIALIZER_UNLOCKED;
+static char s_subtitle_speaker[SUBTITLE_SPEAKER_BYTES] = "小安";
+static char s_subtitle_text[SUBTITLE_TEXT_BYTES] = "你好，我在听";
+static volatile uint32_t s_subtitle_version = 1;
+
+static void subtitle_copy(char *dst, size_t dst_size, const char *src)
+{
+    if (!dst || dst_size == 0) {
+        return;
+    }
+    if (!src) {
+        src = "";
+    }
+    size_t i = 0;
+    for (; i + 1 < dst_size && src[i]; i++) {
+        dst[i] = src[i];
+    }
+    dst[i] = '\0';
+}
+
+void screen_anim_set_subtitle(const char *speaker, const char *text)
+{
+    portENTER_CRITICAL(&s_subtitle_lock);
+    subtitle_copy(s_subtitle_speaker, sizeof(s_subtitle_speaker), speaker);
+    subtitle_copy(s_subtitle_text, sizeof(s_subtitle_text), text);
+    s_subtitle_version++;
+    if (s_subtitle_version == 0) {
+        s_subtitle_version = 1;
+    }
+    portEXIT_CRITICAL(&s_subtitle_lock);
+}
+
+static uint32_t subtitle_get_snapshot(char *speaker, size_t speaker_size,
+                                      char *text, size_t text_size)
+{
+    uint32_t version;
+    portENTER_CRITICAL(&s_subtitle_lock);
+    subtitle_copy(speaker, speaker_size, s_subtitle_speaker);
+    subtitle_copy(text, text_size, s_subtitle_text);
+    version = s_subtitle_version;
+    portEXIT_CRITICAL(&s_subtitle_lock);
+    return version;
+}
 
 #if ENABLE_LOWER_PARTICLES
 typedef struct {
@@ -256,7 +308,7 @@ static void status_blend_pixel(uint8_t *pixel, int r, int g, int b, int alpha)
     pixel[2] = status_clamp_rgb666(pixel[2] + (b - pixel[2]) * alpha / 255);
 }
 
-static const uint8_t s_status_cn_line1[10][11] = {
+static const uint8_t s_status_cn_line1[10][11] __attribute__((unused)) = {
     {0x12, 0x05, 0xF8, 0xBF, 0x24, 0x40, 0x00, 0x35, 0x01, 0x00, 0x06},
     {0x36, 0x05, 0x08, 0xA1, 0x12, 0x80, 0x01, 0xC4, 0xBF, 0xFB, 0xB8},
     {0x27, 0xE7, 0xF8, 0xFF, 0x07, 0xE0, 0x00, 0x44, 0x02, 0x02, 0xA0},
@@ -269,7 +321,7 @@ static const uint8_t s_status_cn_line1[10][11] = {
     {0x27, 0x05, 0x9C, 0xB3, 0xB8, 0xF2, 0x01, 0xC1, 0x8F, 0xF8, 0x84},
 };
 
-static const uint8_t s_status_cn_line2[11][13] = {
+static const uint8_t s_status_cn_line2[11][13] __attribute__((unused)) = {
     {0x00, 0x02, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00},
     {0x0C, 0x3F, 0xF8, 0xA0, 0x29, 0x02, 0xF8, 0x18, 0x7D, 0xC0, 0x00, 0x08, 0x00},
     {0xFF, 0xC2, 0x41, 0xA0, 0x49, 0x04, 0x89, 0xFF, 0x92, 0x40, 0x00, 0x0F, 0xC0},
@@ -330,23 +382,128 @@ static void status_draw_subtitle_line(uint8_t *buf, int width, int chunk_y, int 
                                   252, 252, 252, 255);
 }
 
-static void status_overlay_chunk(int chunk_y, int lines, uint32_t tick)
+static const char *subtitle_next_codepoint(const char *s, uint32_t *out)
+{
+    const uint8_t *p = (const uint8_t *)s;
+    if (!p || !*p) {
+        *out = 0;
+        return s;
+    }
+
+    if (p[0] < 0x80) {
+        *out = p[0];
+        return (const char *)(p + 1);
+    }
+    if ((p[0] & 0xE0) == 0xC0 && (p[1] & 0xC0) == 0x80) {
+        *out = ((uint32_t)(p[0] & 0x1F) << 6) | (uint32_t)(p[1] & 0x3F);
+        return (const char *)(p + 2);
+    }
+    if ((p[0] & 0xF0) == 0xE0 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
+        *out = ((uint32_t)(p[0] & 0x0F) << 12) |
+               ((uint32_t)(p[1] & 0x3F) << 6) |
+               (uint32_t)(p[2] & 0x3F);
+        return (const char *)(p + 3);
+    }
+    if ((p[0] & 0xF8) == 0xF0 && (p[1] & 0xC0) == 0x80 &&
+        (p[2] & 0xC0) == 0x80 && (p[3] & 0xC0) == 0x80) {
+        *out = ((uint32_t)(p[0] & 0x07) << 18) |
+               ((uint32_t)(p[1] & 0x3F) << 12) |
+               ((uint32_t)(p[2] & 0x3F) << 6) |
+               (uint32_t)(p[3] & 0x3F);
+        return (const char *)(p + 4);
+    }
+
+    *out = '?';
+    return (const char *)(p + 1);
+}
+
+static void subtitle_layout(const char *speaker, const char *text,
+                            uint32_t out[SUBTITLE_LINES][SUBTITLE_MAX_GLYPHS_PER_LINE],
+                            int counts[SUBTITLE_LINES])
+{
+    char display[SUBTITLE_SPEAKER_BYTES + SUBTITLE_TEXT_BYTES + 4];
+    if (speaker && speaker[0]) {
+        snprintf(display, sizeof(display), "%s: %s", speaker, text ? text : "");
+    } else {
+        snprintf(display, sizeof(display), "%s", text ? text : "");
+    }
+
+    memset(out, 0, sizeof(uint32_t) * SUBTITLE_LINES * SUBTITLE_MAX_GLYPHS_PER_LINE);
+    memset(counts, 0, sizeof(int) * SUBTITLE_LINES);
+
+    int line = 0;
+    const char *p = display;
+    while (*p && line < SUBTITLE_LINES) {
+        uint32_t cp;
+        p = subtitle_next_codepoint(p, &cp);
+        if (cp == 0 || cp == '\r') {
+            continue;
+        }
+        if (cp == '\n') {
+            line++;
+            continue;
+        }
+        if (counts[line] >= SUBTITLE_MAX_GLYPHS_PER_LINE) {
+            line++;
+            if (line >= SUBTITLE_LINES) {
+                break;
+            }
+        }
+        out[line][counts[line]++] = cp;
+    }
+
+    if (*p && counts[SUBTITLE_LINES - 1] >= 3) {
+        int n = counts[SUBTITLE_LINES - 1];
+        out[SUBTITLE_LINES - 1][n - 3] = '.';
+        out[SUBTITLE_LINES - 1][n - 2] = '.';
+        out[SUBTITLE_LINES - 1][n - 1] = '.';
+    }
+}
+
+static void status_draw_text_glyph(uint8_t *buf, int width, int chunk_y, int lines,
+                                   int draw_x, int draw_y, uint32_t codepoint)
+{
+    const uint8_t *glyph = font_gb2312_16_get(codepoint);
+    if (!glyph) {
+        return;
+    }
+    status_draw_subtitle_line(buf, width, chunk_y, lines,
+                              draw_x, draw_y,
+                              FONT_GB2312_16_W, FONT_GB2312_16_H,
+                              FONT_GB2312_16_BYTES / FONT_GB2312_16_H,
+                              glyph);
+}
+
+static void status_overlay_chunk(int chunk_y, int lines, uint32_t tick,
+                                 const char *speaker, const char *text)
 {
     (void)tick;
-    const int block_x = (STATUS_PANEL_W - 98) / 2;
+    uint32_t glyphs[SUBTITLE_LINES][SUBTITLE_MAX_GLYPHS_PER_LINE];
+    int counts[SUBTITLE_LINES];
+    subtitle_layout(speaker, text, glyphs, counts);
 
-    status_draw_subtitle_line(s_tx_buf, STATUS_PANEL_W, chunk_y, lines,
-                              block_x + 5, 4,
-                              88, 10, (int)sizeof(s_status_cn_line1[0]),
-                              &s_status_cn_line1[0][0]);
-    status_draw_subtitle_line(s_tx_buf, STATUS_PANEL_W, chunk_y, lines,
-                              block_x, 18,
-                              98, 11, (int)sizeof(s_status_cn_line2[0]),
-                              &s_status_cn_line2[0][0]);
+    for (int line = 0; line < SUBTITLE_LINES; line++) {
+        const int text_w = counts[line] * SUBTITLE_GLYPH_STEP_X;
+        int draw_x = SUBTITLE_MARGIN_X;
+        if (text_w > 0 && text_w < STATUS_PANEL_W - SUBTITLE_MARGIN_X * 2) {
+            draw_x = (STATUS_PANEL_W - text_w) / 2;
+        }
+        const int draw_y = line == 0 ? 0 : 17;
+        for (int i = 0; i < counts[line]; i++) {
+            status_draw_text_glyph(s_tx_buf, STATUS_PANEL_W, chunk_y, lines,
+                                   draw_x + i * SUBTITLE_GLYPH_STEP_X,
+                                   draw_y,
+                                   glyphs[line][i]);
+        }
+    }
 }
 
 static esp_err_t draw_status_panel(uint32_t tick)
 {
+    char speaker[SUBTITLE_SPEAKER_BYTES];
+    char text[SUBTITLE_TEXT_BYTES];
+    subtitle_get_snapshot(speaker, sizeof(speaker), text, sizeof(text));
+
     for (int row = 0; row < STATUS_PANEL_H; row += DIRECT_DRAW_LINES) {
         int lines = STATUS_PANEL_H - row;
         if (lines > DIRECT_DRAW_LINES) {
@@ -363,7 +520,7 @@ static esp_err_t draw_status_panel(uint32_t tick)
             dst += STATUS_PANEL_W * 3;
         }
 
-        status_overlay_chunk(row, lines, tick);
+        status_overlay_chunk(row, lines, tick, speaker, text);
         ESP_RETURN_ON_ERROR(lcd_ili9488_draw_rgb666_image(STATUS_PANEL_X,
                                                           STATUS_PANEL_Y + row,
                                                           STATUS_PANEL_W,
@@ -536,6 +693,7 @@ static void animation_task(void *arg)
 #endif
 #if ENABLE_AI_STATUS_PANEL
     ESP_ERROR_CHECK_WITHOUT_ABORT(draw_status_panel(0));
+    uint32_t drawn_subtitle_version = s_subtitle_version;
 #endif
     while (1) {
         TickType_t start = xTaskGetTickCount();
@@ -573,6 +731,18 @@ static void animation_task(void *arg)
                                    animation_tick);
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "draw lower particles failed: %s", esp_err_to_name(err));
+            }
+        }
+#endif
+
+#if ENABLE_AI_STATUS_PANEL
+        uint32_t current_subtitle_version = s_subtitle_version;
+        if (current_subtitle_version != drawn_subtitle_version) {
+            esp_err_t status_err = draw_status_panel(animation_tick);
+            if (status_err != ESP_OK) {
+                ESP_LOGW(TAG, "draw subtitle failed: %s", esp_err_to_name(status_err));
+            } else {
+                drawn_subtitle_version = current_subtitle_version;
             }
         }
 #endif
