@@ -3,752 +3,617 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>小安 · 智能枕头</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<title>小安 XiaoAn · 智能睡眠伴侣</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #080b14;
-  --surface: #111827;
-  --surface2: #1a2236;
-  --surface3: #1f2a3f;
-  --border: #243049;
-  --border-light: #2d3b58;
-  --text: #e8ecf4;
-  --text2: #a3aec6;
-  --text3: #6b7592;
-  --primary: #6c8cff;
-  --primary-dim: rgba(108,140,255,0.12);
-  --primary-glow: rgba(108,140,255,0.25);
-  --green: #4ade80;
-  --green-dim: rgba(74,222,128,0.12);
-  --amber: #fbbf24;
-  --amber-dim: rgba(251,191,36,0.12);
+  --bg: #05070d;
+  --bg2: #0a0e18;
+  --surface: #111620;
+  --surface2: #181f2e;
+  --border: #1f2a3f;
+  --border-light: #2a3858;
+  --text: #eaeef6;
+  --text2: #95a1bb;
+  --text3: #5c6884;
+  --pri: #6d8aff;
+  --pri2: #8b9fff;
+  --pri-glow: rgba(109,138,255,0.2);
+  --pri-strong: rgba(109,138,255,0.35);
+  --grn: #4ade80;
+  --grn-glow: rgba(74,222,128,0.15);
+  --amb: #fbbf24;
+  --amb-glow: rgba(251,191,36,0.15);
   --red: #f87171;
-  --red-dim: rgba(248,113,113,0.12);
-  --pink: #f472b6; 
-  --pink-dim: rgba(244,114,182,0.12);
-  --radius: 20px;
-  --radius-sm: 12px;
-  --radius-xs: 8px;
-  --shadow-lg: 0 25px 60px rgba(0,0,0,0.5);
-  --shadow-card: 0 1px 2px rgba(0,0,0,0.3), 0 4px 16px rgba(0,0,0,0.2);
-  --ease: cubic-bezier(0.22,0.61,0.36,1);
-  --ease-out: cubic-bezier(0,0,0.2,1);
+  --pink: #f472b6;
+  --rad: 24px;
+  --rad-sm: 14px;
+  --rad-xs: 10px;
 }
 
 * { margin:0; padding:0; box-sizing:border-box; }
+html { scroll-behavior: smooth; }
 
 body {
   font-family: 'Inter', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  min-height: 100vh;
-  -webkit-font-smoothing: antialiased;
-  overflow-x: hidden;
+  background: var(--bg); color: var(--text);
+  -webkit-font-smoothing: antialiased; overflow-x: hidden;
 }
 
-/* ── Background ambient ── */
-.bg-ambient {
-  position: fixed; inset: 0; pointer-events: none; z-index: 0;
-  overflow: hidden;
+/* ═══════════════════════════════════════════════════
+   BACKGROUND
+   ═══════════════════════════════════════════════════ */
+.bg-grid {
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background-image:
+    linear-gradient(rgba(109,138,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(109,138,255,0.03) 1px, transparent 1px);
+  background-size: 60px 60px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 30%, transparent 70%);
 }
-.bg-orb {
-  position: absolute; border-radius: 50%; filter: blur(120px); opacity: 0.08;
+.bg-glow {
+  position: fixed; pointer-events: none; z-index: 0;
 }
-.bg-orb.orb1 { width: 600px; height: 600px; background: var(--primary); top: -200px; right: -150px; }
-.bg-orb.orb2 { width: 400px; height: 400px; background: var(--pink); bottom: -100px; left: -100px; }
-.bg-orb.orb3 { width: 300px; height: 300px; background: var(--green); top: 50%; left: 50%; transform: translate(-50%,-50%); }
+.bg-glow.g1 {
+  width: 800px; height: 800px; background: radial-gradient(circle, rgba(109,138,255,0.06), transparent 70%);
+  top: -300px; left: 50%; transform: translateX(-50%);
+}
+.bg-glow.g2 {
+  width: 500px; height: 600px; background: radial-gradient(circle, rgba(244,114,182,0.04), transparent 70%);
+  bottom: -100px; right: -100px;
+}
 
-/* ── Layout ── */
-.app {
-  position: relative; z-index: 1;
-  max-width: 800px; margin: 0 auto; padding: 40px 24px 80px;
+/* ═══════════════════════════════════════════════════
+   NAV
+   ═══════════════════════════════════════════════════ */
+.nav {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+  padding: 16px 32px; display: flex; align-items: center; justify-content: space-between;
+  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  background: rgba(5,7,13,0.7); border-bottom: 1px solid rgba(255,255,255,0.04);
 }
-
-/* ── Top bar ── */
-.topbar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 0 32px;
-}
-.logo {
-  display: flex; align-items: center; gap: 10px;
-  font-size: 18px; font-weight: 600; letter-spacing: -0.3px;
-}
-.logo-emoji {
-  width: 38px; height: 38px; border-radius: 12px;
-  background: linear-gradient(135deg, var(--primary), #8b5cf6);
+.nav-brand { display: flex; align-items: center; gap: 10px; }
+.nav-logo {
+  width: 34px; height: 34px; border-radius: 10px;
+  background: linear-gradient(135deg, #6d8aff, #a78bfa);
   display: flex; align-items: center; justify-content: center;
-  font-size: 20px; box-shadow: 0 8px 24px var(--primary-glow);
+  font-size: 18px; box-shadow: 0 4px 20px rgba(109,138,255,0.3);
 }
-.steps-indicator {
-  display: flex; gap: 6px;
+.nav-name { font-size: 16px; font-weight: 700; letter-spacing: -0.3px; }
+.nav-links { display: flex; gap: 24px; align-items: center; }
+.nav-link { font-size: 13px; color: var(--text2); cursor: pointer; transition: color 0.2s; font-weight: 500; text-decoration: none; }
+.nav-link:hover { color: var(--text); }
+.nav-btn {
+  padding: 8px 20px; border-radius: 20px; font-size: 13px; font-weight: 600;
+  background: var(--pri); color: #fff; border: none; cursor: pointer;
+  transition: all 0.25s; font-family: inherit;
+  box-shadow: 0 4px 16px rgba(109,138,255,0.25);
 }
-.step-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: var(--border); transition: all 0.4s var(--ease);
-}
-.step-dot.done { background: var(--primary); }
-.step-dot.current { background: var(--primary); box-shadow: 0 0 10px var(--primary-glow); width: 24px; border-radius: 4px; }
+.nav-btn:hover { filter: brightness(1.12); transform: translateY(-1px); }
 
-/* ── Step container ── */
-.steps { position: relative; }
-.step {
-  display: none;
-  animation: stepIn 0.5s var(--ease-out) forwards;
+/* ═══════════════════════════════════════════════════
+   HERO
+   ═══════════════════════════════════════════════════ */
+.hero {
+  position: relative; z-index: 1; text-align: center;
+  padding: 160px 24px 80px; max-width: 760px; margin: 0 auto;
 }
-.step.active { display: block; }
-@keyframes stepIn {
-  from { opacity: 0; transform: translateY(20px); }
-  to   { opacity: 1; transform: translateY(0); }
+.hero-badge {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 16px; border-radius: 20px; font-size: 12px; font-weight: 600;
+  background: rgba(109,138,255,0.08); border: 1px solid rgba(109,138,255,0.15);
+  color: var(--pri2); margin-bottom: 28px;
 }
+.hero-badge .dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--grn);
+  box-shadow: 0 0 8px rgba(74,222,128,0.5); animation: pulse-dot 2s infinite;
+}
+@keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.3} }
+.hero h1 {
+  font-size: 56px; font-weight: 900; letter-spacing: -1.5px;
+  line-height: 1.15; margin-bottom: 20px;
+  background: linear-gradient(180deg, #fff 30%, #8b9fff 100%);
+  -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.hero p {
+  font-size: 17px; color: var(--text2); line-height: 1.7;
+  max-width: 520px; margin: 0 auto 36px;
+}
+.hero-btns { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+.btn-lg {
+  padding: 16px 36px; border-radius: 16px; font-size: 16px;
+  font-weight: 700; border: none; cursor: pointer; font-family: inherit;
+  transition: all 0.3s cubic-bezier(0.22,0.61,0.36,1); letter-spacing: -0.2px;
+}
+.btn-primary {
+  background: var(--pri); color: #fff;
+  box-shadow: 0 8px 32px rgba(109,138,255,0.35), 0 0 0 1px rgba(109,138,255,0.2) inset;
+}
+.btn-primary:hover { transform: translateY(-2px); box-shadow: 0 16px 40px rgba(109,138,255,0.4); filter: brightness(1.08); }
+.btn-secondary {
+  background: rgba(255,255,255,0.04); color: var(--text);
+  border: 1px solid var(--border-light);
+}
+.btn-secondary:hover { background: rgba(255,255,255,0.07); border-color: #3a4870; }
 
-/* ── Card ── */
-.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 28px;
-  margin-bottom: 14px;
-  box-shadow: var(--shadow-card);
-  transition: border-color 0.3s;
+/* ═══════════════════════════════════════════════════
+   PRODUCT VISUAL
+   ═══════════════════════════════════════════════════ */
+.visual {
+  position: relative; z-index: 1; max-width: 900px; margin: -20px auto 80px;
+  padding: 0 24px;
 }
-.card:hover { border-color: var(--border-light); }
-.card-header {
-  display: flex; align-items: center; gap: 12px; margin-bottom: 20px;
-}
-.card-icon {
-  width: 40px; height: 40px; border-radius: var(--radius-sm);
-  display: flex; align-items: center; justify-content: center;
-  font-size: 20px; flex-shrink: 0;
-}
-.card-icon.blue { background: var(--primary-dim); }
-.card-icon.green { background: var(--green-dim); }
-.card-icon.amber { background: var(--amber-dim); }
-.card-icon.red { background: var(--red-dim); }
-.card-icon.pink { background: var(--pink-dim); }
-.card-label { font-size: 11px; color: var(--text3); text-transform: uppercase; letter-spacing: 1px; font-weight: 500; }
-.card-title { font-size: 17px; font-weight: 600; letter-spacing: -0.2px; }
-.card-sub { font-size: 13px; color: var(--text2); margin-top: 4px; }
-
-/* ── Form ── */
-.form-row {
-  display: flex; align-items: center; gap: 12px; margin-bottom: 14px;
-}
-.form-row:last-child { margin-bottom: 0; }
-.form-label {
-  font-size: 13px; color: var(--text2); font-weight: 500;
-  min-width: 70px; flex-shrink: 0;
-}
-
-/* Time input */
-.time-input {
-  background: var(--surface2); border: 1px solid var(--border);
-  color: var(--text); font-size: 15px; padding: 10px 14px;
-  border-radius: var(--radius-xs); outline: none; font-family: inherit;
-  font-weight: 500; width: 110px; text-align: center;
-  transition: all 0.2s;
-}
-.time-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-dim); }
-.time-sep { color: var(--text3); font-size: 14px; }
-
-/* Select */
-.select-wrap { position: relative; flex: 1; }
-.select-wrap select {
-  width: 100%; background: var(--surface2); border: 1px solid var(--border);
-  color: var(--text); font-size: 14px; padding: 10px 36px 10px 14px;
-  border-radius: var(--radius-xs); outline: none; font-family: inherit;
-  appearance: none; cursor: pointer; font-weight: 500;
-  transition: all 0.2s;
-}
-.select-wrap select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-dim); }
-.select-wrap::after {
-  content: ''; position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
-  width: 0; height: 0; border-left: 5px solid transparent;
-  border-right: 5px solid transparent; border-top: 6px solid var(--text3);
-  pointer-events: none;
-}
-
-/* Number input */
-.num-input {
-  background: var(--surface2); border: 1px solid var(--border);
-  color: var(--text); font-size: 15px; padding: 10px 12px;
-  border-radius: var(--radius-xs); outline: none; font-family: inherit;
-  font-weight: 500; width: 80px; text-align: center;
-  transition: all 0.2s;
-}
-.num-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-dim); }
-.unit { color: var(--text3); font-size: 13px; font-weight: 500; }
-
-/* ── Pill selector ── */
-.pill-row {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
-}
-.pill-card {
-  background: var(--surface2); border: 1.5px solid var(--border);
-  border-radius: var(--radius-sm); padding: 20px; cursor: pointer;
-  transition: all 0.3s var(--ease); text-align: center;
+.visual-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--rad); padding: 48px;
   position: relative; overflow: hidden;
 }
-.pill-card:hover { border-color: var(--border-light); transform: translateY(-2px); }
-.pill-card.selected {
-  border-color: var(--primary); background: var(--primary-dim);
-  box-shadow: 0 0 30px rgba(108,140,255,0.1);
+.visual-card::before {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(ellipse 80% 50% at 50% 0%, rgba(109,138,255,0.06), transparent);
 }
-.pill-card .check-mark {
-  position: absolute; top: 10px; right: 12px;
-  width: 20px; height: 20px; border-radius: 50%;
-  background: var(--primary); display: flex; align-items: center; justify-content: center;
-  font-size: 11px; color: #fff; opacity: 0; transform: scale(0.6);
-  transition: all 0.3s var(--ease);
+.visual-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px;
+  position: relative; z-index: 1;
 }
-.pill-card.selected .check-mark { opacity: 1; transform: scale(1); }
-.pill-icon { font-size: 32px; margin-bottom: 10px; }
-.pill-name { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+.visual-item {
+  text-align: center; padding: 24px 12px; border-radius: var(--rad-sm);
+  background: var(--surface2); border: 1px solid var(--border);
+  transition: all 0.3s;
+}
+.visual-item:hover { border-color: var(--border-light); transform: translateY(-4px); }
+.visual-icon {
+  font-size: 32px; margin-bottom: 12px;
+  width: 56px; height: 56px; border-radius: 16px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.visual-item:nth-child(1) .visual-icon { background: var(--pri-glow); }
+.visual-item:nth-child(2) .visual-icon { background: var(--grn-glow); }
+.visual-item:nth-child(3) .visual-icon { background: var(--amb-glow); }
+.visual-item:nth-child(4) .visual-icon { background: rgba(244,114,182,0.12); }
+.visual-title { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+.visual-desc { font-size: 11px; color: var(--text3); line-height: 1.5; }
+
+/* ═══════════════════════════════════════════════════
+   SETUP SECTION
+   ═══════════════════════════════════════════════════ */
+#setup {
+  position: relative; z-index: 1; max-width: 780px; margin: 0 auto 100px;
+  padding: 0 24px;
+}
+.section-label {
+  text-align: center; font-size: 11px; color: var(--pri2); font-weight: 700;
+  text-transform: uppercase; letter-spacing: 2px; margin-bottom: 12px;
+}
+.section-title {
+  text-align: center; font-size: 32px; font-weight: 800; letter-spacing: -0.6px;
+  margin-bottom: 6px;
+}
+.section-sub {
+  text-align: center; font-size: 14px; color: var(--text2); margin-bottom: 48px;
+}
+
+.wizard {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--rad); overflow: hidden;
+  box-shadow: 0 4px 40px rgba(0,0,0,0.3);
+}
+.wizard-top {
+  display: flex; align-items: center; padding: 20px 28px;
+  border-bottom: 1px solid var(--border); gap: 16px;
+}
+.wizard-step {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--text3); font-weight: 500;
+}
+.wizard-step .num {
+  width: 24px; height: 24px; border-radius: 50%; display: flex;
+  align-items: center; justify-content: center; font-size: 11px; font-weight: 700;
+  background: var(--border); color: var(--text3);
+  transition: all 0.4s;
+}
+.wizard-step.done .num { background: var(--pri); color: #fff; }
+.wizard-step.current .num { background: var(--pri); color: #fff; box-shadow: 0 0 16px var(--pri-glow); }
+.wizard-step .sep { flex: 1; height: 1px; background: var(--border); min-width: 20px; }
+.wizard-step.done .sep { background: var(--pri); opacity: 0.3; }
+
+.wizard-body { padding: 36px 40px; min-height: 320px; }
+.wb-step { display: none; animation: fadeSlide 0.45s ease-out; }
+.wb-step.active { display: block; }
+@keyframes fadeSlide { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
+
+.wb-title { font-size: 20px; font-weight: 700; margin-bottom: 6px; letter-spacing: -0.3px; }
+.wb-sub { font-size: 13px; color: var(--text2); margin-bottom: 28px; }
+
+.field { margin-bottom: 20px; }
+.field-label { font-size: 12px; color: var(--text3); font-weight: 600; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+.time-row { display: flex; align-items: center; gap: 12px; }
+.time-box {
+  background: var(--surface2); border: 1px solid var(--border); border-radius: var(--rad-xs);
+  padding: 12px 16px; font-size: 16px; color: var(--text); font-family: inherit;
+  width: 110px; text-align: center; font-weight: 600; outline: none;
+  transition: all 0.2s;
+}
+.time-box:focus { border-color: var(--pri); box-shadow: 0 0 0 3px var(--pri-glow); }
+.time-arrow { color: var(--text3); font-size: 18px; }
+
+.sel-wrap { position: relative; }
+.sel-wrap select {
+  width: 100%; background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text); font-size: 14px; padding: 12px 40px 12px 14px;
+  border-radius: var(--rad-xs); outline: none; font-family: inherit;
+  appearance: none; cursor: pointer; font-weight: 500; transition: all 0.2s;
+}
+.sel-wrap select:focus { border-color: var(--pri); box-shadow: 0 0 0 3px var(--pri-glow); }
+.sel-wrap::after {
+  content: ''; position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+  border: 5px solid transparent; border-top: 6px solid var(--text3); pointer-events: none;
+}
+
+.pill-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.pill-opt {
+  background: var(--surface2); border: 1.5px solid var(--border); border-radius: var(--rad-sm);
+  padding: 24px; cursor: pointer; transition: all 0.3s; text-align: center; position: relative;
+}
+.pill-opt:hover { border-color: var(--border-light); }
+.pill-opt.sel { border-color: var(--pri); background: rgba(109,138,255,0.06); }
+.pill-opt .chk {
+  position: absolute; top: 12px; right: 14px; width: 22px; height: 22px;
+  border-radius: 50%; background: var(--pri); color: #fff; display: flex;
+  align-items: center; justify-content: center; font-size: 12px;
+  opacity: 0; transform: scale(0.6); transition: all 0.3s;
+}
+.pill-opt.sel .chk { opacity: 1; transform: scale(1); }
+.pill-emoji { font-size: 36px; margin-bottom: 10px; }
+.pill-name { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
 .pill-desc { font-size: 12px; color: var(--text2); line-height: 1.5; }
-.pill-card input { display: none; }
+.pill-opt input { display: none; }
 
-/* ── Toggle switch ── */
-.toggle-row {
+.tog-row {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 0; border-bottom: 1px solid var(--border);
+  padding: 14px 16px; background: var(--surface2); border-radius: var(--rad-xs);
+  margin-bottom: 8px;
 }
-.toggle-row:last-child { border-bottom: none; }
-.toggle-info { flex: 1; }
-.toggle-label { font-size: 14px; font-weight: 500; }
-.toggle-desc { font-size: 12px; color: var(--text2); margin-top: 2px; }
-.toggle {
-  width: 48px; height: 28px; border-radius: 14px;
-  background: var(--border); cursor: pointer; position: relative;
-  transition: background 0.3s; flex-shrink: 0;
+.tog-info { flex: 1; }
+.tog-label { font-size: 14px; font-weight: 600; }
+.tog-desc { font-size: 11px; color: var(--text3); margin-top: 2px; }
+.tog-sw {
+  width: 46px; height: 26px; border-radius: 13px; background: var(--border);
+  cursor: pointer; flex-shrink: 0; position: relative; transition: background 0.3s;
 }
-.toggle.on { background: var(--primary); }
-.toggle::after {
-  content: ''; position: absolute; top: 3px; left: 3px;
-  width: 22px; height: 22px; border-radius: 50%;
-  background: #fff; transition: transform 0.3s var(--ease);
-  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+.tog-sw.on { background: var(--pri); }
+.tog-sw::after {
+  content: ''; position: absolute; top: 2px; left: 2px;
+  width: 22px; height: 22px; border-radius: 50%; background: #fff;
+  transition: transform 0.3s cubic-bezier(0.22,0.61,0.36,1);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2);
 }
-.toggle.on::after { transform: translateX(20px); }
+.tog-sw.on::after { transform: translateX(20px); }
 
-/* ── Safety gauge ── */
-.gauge-wrap { margin-top: 8px; }
-.gauge-bar {
-  height: 8px; border-radius: 4px; background: var(--surface2);
-  position: relative; overflow: visible;
+.path-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.path-chip {
+  padding: 10px 16px; border-radius: 20px; font-size: 13px;
+  background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text2); font-family: 'SF Mono','Fira Code',monospace;
+  display: flex; align-items: center; gap: 6px;
+}
+
+.gauge-area { margin-top: 4px; }
+.gauge-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+.gauge-val { font-size: 28px; font-weight: 800; letter-spacing: -0.5px; }
+.gauge-unit { font-size: 13px; color: var(--text3); margin-left: 4px; }
+.gauge-track {
+  height: 10px; border-radius: 5px; background: var(--surface2);
+  position: relative; cursor: pointer; overflow: visible;
 }
 .gauge-fill {
-  height: 100%; border-radius: 4px; transition: width 0.5s var(--ease);
-  background: linear-gradient(90deg, var(--green), var(--amber) 60%, var(--red));
+  height: 100%; border-radius: 5px; transition: width 0.3s;
+  background: linear-gradient(90deg, var(--grn), var(--amb) 55%, var(--red));
 }
 .gauge-thumb {
   position: absolute; top: 50%; transform: translate(-50%,-50%);
-  width: 20px; height: 20px; border-radius: 50%;
-  background: #fff; border: 3px solid var(--primary);
-  box-shadow: 0 2px 12px rgba(0,0,0,0.3); transition: left 0.5s var(--ease);
-  cursor: pointer; z-index: 2;
+  width: 24px; height: 24px; border-radius: 50%;
+  background: #fff; border: 3px solid var(--pri);
+  box-shadow: 0 3px 14px rgba(0,0,0,0.4); cursor: grab;
+  transition: left 0.3s; z-index: 2;
 }
-.gauge-labels {
-  display: flex; justify-content: space-between;
-  font-size: 10px; color: var(--text3); margin-top: 6px;
-}
+.gauge-ticks { display: flex; justify-content: space-between; font-size: 10px; color: var(--text3); margin-top: 6px; }
 
-/* ── Path tags ── */
-.path-tags { display: flex; gap: 8px; flex-wrap: wrap; }
-.path-tag {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 8px 14px; border-radius: 20px; font-size: 13px;
-  background: var(--surface2); border: 1px solid var(--border);
-  color: var(--text2); font-family: 'SF Mono','Fira Code','Consolas',monospace;
+.summary-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  background: var(--surface2); border-radius: var(--rad-sm); padding: 20px;
 }
-.path-tag .tag-icon { font-size: 14px; }
+.sr { display: flex; justify-content: space-between; font-size: 13px; padding: 4px 0; }
+.sr-key { color: var(--text3); }
+.sr-val { color: var(--text); font-weight: 600; }
 
-/* ── Preview panel ── */
-.preview-panel {
-  background: var(--surface2); border: 1px solid var(--border);
-  border-radius: var(--radius-sm); padding: 18px 20px;
-  margin-top: 20px;
+.wizard-foot { padding: 20px 40px; border-top: 1px solid var(--border); display: flex; gap: 12px; }
+.wf-back {
+  width: 48px; height: 48px; border-radius: 14px; background: transparent;
+  border: 1px solid var(--border); color: var(--text2); cursor: pointer;
+  font-size: 18px; transition: all 0.2s; display: flex; align-items: center; justify-content: center;
 }
-.preview-title {
-  font-size: 11px; color: var(--text3); text-transform: uppercase;
-  letter-spacing: 1px; margin-bottom: 10px; font-weight: 500;
+.wf-back:hover { border-color: var(--border-light); color: var(--text); }
+.wf-next {
+  flex: 1; height: 48px; border-radius: 14px; background: var(--pri); color: #fff;
+  border: none; font-size: 15px; font-weight: 700; cursor: pointer; font-family: inherit;
+  transition: all 0.25s; box-shadow: 0 6px 24px rgba(109,138,255,0.2);
 }
-.preview-grid {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
-  font-size: 13px;
-}
-.preview-item { display: flex; justify-content: space-between; }
-.preview-key { color: var(--text3); }
-.preview-val { color: var(--text); font-weight: 500; }
+.wf-next:hover { filter: brightness(1.1); transform: translateY(-1px); }
 
-/* ── Nav buttons ── */
-.nav-row {
-  display: flex; gap: 12px; margin-top: 28px;
-}
-.btn {
-  padding: 14px 28px; border-radius: 14px; font-size: 15px;
-  font-weight: 600; border: none; cursor: pointer; font-family: inherit;
-  transition: all 0.25s var(--ease); letter-spacing: -0.2px;
-}
-.btn:active { transform: scale(0.97); }
-.btn-primary {
-  flex: 1; background: var(--primary); color: #fff;
-  box-shadow: 0 8px 28px var(--primary-glow);
-}
-.btn-primary:hover { filter: brightness(1.1); box-shadow: 0 12px 36px var(--primary-glow); }
-.btn-ghost {
-  background: transparent; border: 1px solid var(--border); color: var(--text2);
-}
-.btn-ghost:hover { border-color: var(--border-light); color: var(--text); }
-.btn-back {
-  background: transparent; border: 1px solid var(--border); color: var(--text2);
-  width: 52px; display: flex; align-items: center; justify-content: center;
-}
-.btn-back:hover { border-color: var(--border-light); color: var(--text); }
-
-/* ── Success state ── */
-.success-overlay {
-  display: none; position: fixed; inset: 0; z-index: 100;
-  background: rgba(8,11,20,0.9); backdrop-filter: blur(8px);
+/* ═══════════════════════════════════════════════════
+   SUCCESS
+   ═══════════════════════════════════════════════════ */
+.overlay {
+  position: fixed; inset: 0; z-index: 200; display: none;
+  background: rgba(5,7,13,0.92); backdrop-filter: blur(12px);
   align-items: center; justify-content: center; flex-direction: column;
 }
-.success-overlay.show { display: flex; }
-.success-icon {
-  width: 80px; height: 80px; border-radius: 50%;
-  background: var(--green-dim); display: flex; align-items: center; justify-content: center;
-  font-size: 40px; margin-bottom: 24px;
-  animation: successPop 0.6s var(--ease) forwards;
+.overlay.show { display: flex; }
+.overlay-icon {
+  width: 88px; height: 88px; border-radius: 50%;
+  background: linear-gradient(135deg, rgba(74,222,128,0.15), rgba(74,222,128,0.05));
+  display: flex; align-items: center; justify-content: center;
+  font-size: 44px; margin-bottom: 28px;
+  animation: popIn 0.7s cubic-bezier(0.16,1,0.3,1);
 }
-@keyframes successPop {
+@keyframes popIn {
   0% { transform: scale(0); opacity: 0; }
-  60% { transform: scale(1.15); }
+  70% { transform: scale(1.1); }
   100% { transform: scale(1); opacity: 1; }
 }
-.success-title { font-size: 24px; font-weight: 700; margin-bottom: 8px; }
-.success-sub { color: var(--text2); font-size: 14px; margin-bottom: 32px; text-align: center; line-height: 1.6; }
+.overlay h2 { font-size: 26px; font-weight: 800; margin-bottom: 8px; letter-spacing: -0.5px; }
+.overlay p { color: var(--text2); font-size: 14px; margin-bottom: 36px; text-align: center; line-height: 1.7; }
+.overlay-btn {
+  padding: 14px 48px; border-radius: 14px; font-size: 15px; font-weight: 700;
+  background: var(--pri); color: #fff; border: none; cursor: pointer;
+  font-family: inherit; box-shadow: 0 8px 28px rgba(109,138,255,0.3);
+  transition: all 0.25s;
+}
+.overlay-btn:hover { transform: translateY(-2px); filter: brightness(1.1); }
 
-/* ── Responsive ── */
-@media (max-width: 480px) {
-  .app { padding: 20px 16px 60px; }
-  .card { padding: 20px; }
-  .pill-row { grid-template-columns: 1fr; }
-  .preview-grid { grid-template-columns: 1fr; }
-  .form-row { flex-wrap: wrap; }
+/* ═══════════════════════════════════════════════════
+   FOOTER
+   ═══════════════════════════════════════════════════ */
+.footer {
+  position: relative; z-index: 1; text-align: center;
+  padding: 40px 24px 60px; border-top: 1px solid rgba(255,255,255,0.03);
 }
+.footer span { font-size: 12px; color: var(--text3); }
 
-/* ── Step 0: Welcome ── */
-.welcome {
-  text-align: center; padding: 60px 20px;
+@media (max-width: 640px) {
+  .hero h1 { font-size: 34px; }
+  .hero p { font-size: 14px; }
+  .visual-grid { grid-template-columns: 1fr 1fr; }
+  .pill-2 { grid-template-columns: 1fr; }
+  .summary-grid { grid-template-columns: 1fr; }
+  .wizard-body { padding: 24px 20px; }
+  .wizard-foot { padding: 16px 20px; }
+  .nav { padding: 12px 16px; }
+  .nav-links { display: none; }
 }
-.welcome-emoji {
-  font-size: 64px; margin-bottom: 20px;
-  animation: float 3s ease-in-out infinite;
-}
-@keyframes float {
-  0%,100% { transform: translateY(0); }
-  50% { transform: translateY(-12px); }
-}
-.welcome-title { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 10px; }
-.welcome-sub { color: var(--text2); font-size: 15px; line-height: 1.7; max-width: 480px; margin: 0 auto; }
-.welcome-features {
-  display: grid; grid-template-columns: 1fr 1fr 1fr;
-  gap: 12px; max-width: 500px; margin: 32px auto 0;
-}
-.wf-item {
-  background: var(--surface2); border-radius: var(--radius-sm);
-  padding: 16px 12px; text-align: center;
-}
-.wf-icon { font-size: 24px; margin-bottom: 6px; }
-.wf-label { font-size: 12px; color: var(--text2); }
 </style>
 </head>
 <body>
 
-<div class="bg-ambient">
-  <div class="bg-orb orb1"></div>
-  <div class="bg-orb orb2"></div>
-  <div class="bg-orb orb3"></div>
-</div>
+<div class="bg-grid"></div>
+<div class="bg-glow g1"></div>
+<div class="bg-glow g2"></div>
 
-<div class="app">
-  <!-- Top bar -->
-  <div class="topbar">
-    <div class="logo">
-      <div class="logo-emoji">🛏️</div>
-      <span>小安</span>
-    </div>
-    <div class="steps-indicator" id="stepDots">
-      <div class="step-dot current"></div>
-      <div class="step-dot"></div>
-      <div class="step-dot"></div>
-      <div class="step-dot"></div>
-      <div class="step-dot"></div>
+<nav class="nav">
+  <div class="nav-brand">
+    <div class="nav-logo">🛏️</div>
+    <span class="nav-name">小安 XiaoAn</span>
+  </div>
+  <div class="nav-links">
+    <a class="nav-link" href="#features">功能</a>
+    <a class="nav-link" href="#setup">配置</a>
+    <a class="nav-link" href="#">文档</a>
+    <button class="nav-btn" onclick="document.getElementById('setup').scrollIntoView({behavior:'smooth'})">开始设置</button>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="hero-badge"><span class="dot"></span> 第二代 · 智能睡眠伴侣</div>
+  <h1>你的每一夜<br>都值得被认真对待</h1>
+  <p>从躺下的那一刻起，小安就开始工作——感知你的睡姿、调节枕头高度、在你说话时温柔回应。它不只是枕头，是懂你的枕边人。</p>
+  <div class="hero-btns">
+    <button class="btn-lg btn-primary" onclick="document.getElementById('setup').scrollIntoView({behavior:'smooth'})">✨ 开始个性化设置</button>
+    <button class="btn-lg btn-secondary">了解更多</button>
+  </div>
+</section>
+
+<section class="visual" id="features">
+  <div class="visual-card">
+    <div class="visual-grid">
+      <div class="visual-item"><div class="visual-icon">🎙️</div><div class="visual-title">语音对话</div><div class="visual-desc">自然语音交互<br>支持中英文混合</div></div>
+      <div class="visual-item"><div class="visual-icon">📊</div><div class="visual-title">睡眠感知</div><div class="visual-desc">压力+温湿度+光照<br>16 维实时监测</div></div>
+      <div class="visual-item"><div class="visual-icon">🛡️</div><div class="visual-title">智能安全</div><div class="visual-desc">气压上限+急停<br>多级硬件保护</div></div>
+      <div class="visual-item"><div class="visual-icon">🧠</div><div class="visual-title">AI 决策</div><div class="visual-desc">DeepSeek 驱动<br>主动问候+策略调节</div></div>
     </div>
   </div>
+</section>
 
-  <!-- Steps -->
-  <div class="steps" id="steps">
+<section id="setup">
+  <div class="section-label">个性化配置</div>
+  <div class="section-title">2 分钟，定制你的小安</div>
+  <div class="section-sub">所有设置云端同步，随时可修改</div>
 
-    <!-- Step 0: Welcome -->
-    <div class="step active" data-step="0">
-      <div class="welcome">
-        <div class="welcome-emoji">🌙</div>
-        <div class="welcome-title">欢迎使用智能枕头</div>
-        <div class="welcome-sub">花 2 分钟完成初始化，之后每晚躺下<br>小安就会用你喜欢的方式陪你</div>
-        <div class="welcome-features">
-          <div class="wf-item"><div class="wf-icon">🎙️</div><div class="wf-label">语音对话</div></div>
-          <div class="wf-item"><div class="wf-icon">📊</div><div class="wf-label">睡眠感知</div></div>
-          <div class="wf-item"><div class="wf-icon">🛡️</div><div class="wf-label">智能安全</div></div>
-        </div>
-      </div>
-      <div class="nav-row">
-        <div></div>
-        <button class="btn btn-primary" onclick="nextStep()">开始设置 →</button>
-      </div>
+  <div class="wizard">
+    <div class="wizard-top" id="wizTop">
+      <div class="wizard-step current" data-s="0"><span class="num">1</span> 习惯</div>
+      <div class="wizard-step" data-s="1"><span class="sep"></span><span class="num">2</span> 个性</div>
+      <div class="wizard-step" data-s="2"><span class="sep"></span><span class="num">3</span> 安全</div>
+      <div class="wizard-step" data-s="3"><span class="sep"></span><span class="num">4</span> 确认</div>
     </div>
 
-    <!-- Step 1: 睡眠 & 地点 -->
-    <div class="step" data-step="1">
-      <div class="card">
-        <div class="card-header">
-          <div class="card-icon blue">🌙</div>
-          <div>
-            <div class="card-label">STEP 1 · 习惯</div>
-            <div class="card-title">睡眠时间 & 地点</div>
-            <div class="card-sub">小安会根据你的作息调整问候和勿扰时机</div>
+    <div class="wizard-body">
+      <!-- Step 1 -->
+      <div class="wb-step active" data-s="0">
+        <div class="wb-title">🌙 睡眠习惯</div>
+        <div class="wb-sub">告诉小安你的作息，它会自动调整问候和勿扰时机</div>
+        <div class="field"><div class="field-label">就寝时间</div>
+          <div class="time-row">
+            <input type="time" class="time-box" id="s1_sleep" value="23:00">
+            <span class="time-arrow">→</span>
+            <input type="time" class="time-box" id="s1_wake" value="07:30">
+            <span style="font-size:13px;color:var(--text3);margin-left:4px">起床</span>
           </div>
         </div>
-        <div class="form-row">
-          <span class="form-label">入睡</span>
-          <input type="time" class="time-input" id="sleepStart" value="23:00">
-          <span class="time-sep">→</span>
-          <input type="time" class="time-input" id="sleepEnd" value="07:30">
-          <span class="form-label">起床</span>
-        </div>
-        <div class="form-row" style="margin-top:14px">
-          <span class="form-label">城市</span>
-          <div class="select-wrap">
-            <select id="location">
-              <option value="beijing">北京</option>
-              <option value="shanghai">上海</option>
-              <option value="shenzhen">深圳</option>
-              <option value="chengdu">成都</option>
-              <option value="chongqing" selected>重庆</option>
-              <option value="hangzhou">杭州</option>
-              <option value="guangzhou">广州</option>
-            </select>
-          </div>
-          <span class="unit">天气 & 环境参考</span>
-        </div>
-      </div>
-      <div class="nav-row">
-        <button class="btn btn-back" onclick="prevStep()">←</button>
-        <button class="btn btn-primary" onclick="nextStep()">下一步</button>
-      </div>
-    </div>
-
-    <!-- Step 2: AI 性格 & 闹钟 -->
-    <div class="step" data-step="2">
-      <div class="card">
-        <div class="card-header">
-          <div class="card-icon pink">💬</div>
-          <div>
-            <div class="card-label">STEP 2 · 个性</div>
-            <div class="card-title">AI 性格</div>
-            <div class="card-sub">选一个你喜欢的聊天风格</div>
-          </div>
-        </div>
-        <div class="pill-row" id="personalityGroup">
-          <label class="pill-card selected" onclick="selectPill(this)">
-            <input type="radio" name="personality" value="gentle" checked>
-            <div class="check-mark">✓</div>
-            <div class="pill-icon">🌸</div>
-            <div class="pill-name">温柔陪伴型</div>
-            <div class="pill-desc">话多不啰嗦，语气慵懒<br>像枕边的朋友，会主动关心</div>
-          </label>
-          <label class="pill-card" onclick="selectPill(this)">
-            <input type="radio" name="personality" value="concise">
-            <div class="check-mark">✓</div>
-            <div class="pill-icon">⚡</div>
-            <div class="pill-name">简洁助理型</div>
-            <div class="pill-desc">话少精炼，直奔主题<br>不多说一句废话，高效执行</div>
-          </label>
+        <div class="field"><div class="field-label">居住城市</div>
+          <div class="sel-wrap"><select id="s1_city"><option value="beijing">北京</option><option value="shanghai">上海</option><option value="shenzhen">深圳</option><option value="chengdu">成都</option><option value="chongqing" selected>重庆</option><option value="hangzhou">杭州</option><option value="guangzhou">广州</option></select></div>
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-header">
-          <div class="card-icon amber">⏰</div>
-          <div>
-            <div class="card-label">STEP 2 · 唤醒</div>
-            <div class="card-title">闹钟偏好</div>
-            <div class="card-sub">起床时用什么方式唤醒你</div>
+      <!-- Step 2 -->
+      <div class="wb-step" data-s="1">
+        <div class="wb-title">💬 AI 性格 & 闹钟</div>
+        <div class="wb-sub">选一个你喜欢的聊天风格和唤醒方式</div>
+        <div class="field"><div class="field-label">AI 性格</div>
+          <div class="pill-2" id="personality">
+            <label class="pill-opt sel" onclick="selPill(this)"><input type="radio" name="personality" value="gentle" checked><div class="chk">✓</div><div class="pill-emoji">🌸</div><div class="pill-name">温柔陪伴型</div><div class="pill-desc">话多不啰嗦，语气慵懒<br>像枕边的朋友，会主动关心</div></label>
+            <label class="pill-opt" onclick="selPill(this)"><input type="radio" name="personality" value="concise"><div class="chk">✓</div><div class="pill-emoji">⚡</div><div class="pill-name">简洁助理型</div><div class="pill-desc">话少精炼，直奔主题<br>不多说一句废话</div></label>
           </div>
         </div>
-        <div class="toggle-row">
-          <div class="toggle-info">
-            <div class="toggle-label">🎵 轻音乐</div>
-            <div class="toggle-desc">舒缓钢琴曲，渐强播放</div>
-          </div>
-          <div class="toggle on" onclick="this.classList.toggle('on')"></div>
-        </div>
-        <div class="toggle-row">
-          <div class="toggle-info">
-            <div class="toggle-label">💡 渐亮灯光</div>
-            <div class="toggle-desc">模拟日出，30 分钟从暗到亮</div>
-          </div>
-          <div class="toggle" onclick="this.classList.toggle('on')"></div>
-        </div>
-        <div class="toggle-row">
-          <div class="toggle-info">
-            <div class="toggle-label">🫧 气囊轻提醒</div>
-            <div class="toggle-desc">枕头微微起伏，轻柔唤醒</div>
-          </div>
-          <div class="toggle on" onclick="this.classList.toggle('on')"></div>
-        </div>
-      </div>
-      <div class="nav-row">
-        <button class="btn btn-back" onclick="prevStep()">←</button>
-        <button class="btn btn-primary" onclick="nextStep()">下一步</button>
-      </div>
-    </div>
-
-    <!-- Step 3: 隐私 & 安全 -->
-    <div class="step" data-step="3">
-      <div class="card">
-        <div class="card-header">
-          <div class="card-icon green">💻</div>
-          <div>
-            <div class="card-label">STEP 3 · 隐私</div>
-            <div class="card-title">PC Agent 授权</div>
-            <div class="card-sub">只在以下目录读取文件，不会访问其他路径</div>
-          </div>
-        </div>
-        <div class="path-tags">
-          <span class="path-tag"><span class="tag-icon">📁</span> demo_mail/</span>
-          <span class="path-tag"><span class="tag-icon">📁</span> demo_docs/</span>
+        <div class="field"><div class="field-label">唤醒方式</div>
+          <div class="tog-row"><div class="tog-info"><div class="tog-label">🎵 轻音乐</div><div class="tog-desc">舒缓钢琴曲，渐强播放</div></div><div class="tog-sw on" onclick="this.classList.toggle('on')"></div></div>
+          <div class="tog-row"><div class="tog-info"><div class="tog-label">💡 渐亮灯光</div><div class="tog-desc">模拟日出，30 分钟渐变</div></div><div class="tog-sw" onclick="this.classList.toggle('on')"></div></div>
+          <div class="tog-row"><div class="tog-info"><div class="tog-label">🫧 气囊轻提醒</div><div class="tog-desc">枕头微微起伏，轻柔唤醒</div></div><div class="tog-sw on" onclick="this.classList.toggle('on')"></div></div>
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-header">
-          <div class="card-icon red">🛡️</div>
-          <div>
-            <div class="card-label">STEP 3 · 安全</div>
-            <div class="card-title">安全策略</div>
-            <div class="card-sub">硬件保护与夜间勿扰</div>
-          </div>
+      <!-- Step 3 -->
+      <div class="wb-step" data-s="2">
+        <div class="wb-title">🛡️ 隐私 & 安全</div>
+        <div class="wb-sub">你的数据你做主，硬件安全防线</div>
+        <div class="field"><div class="field-label">PC Agent 可读目录</div>
+          <div class="path-chips"><span class="path-chip">📁 demo_mail/</span><span class="path-chip">📁 demo_docs/</span></div>
         </div>
-
-        <div style="margin-bottom:18px">
-          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
-            <span class="form-label">气压上限</span>
-            <span style="font-size:20px;font-weight:700" id="pressureDisplay">5.0</span>
-            <span class="unit">kPa</span>
-          </div>
-          <div class="gauge-wrap">
-            <div class="gauge-bar" id="gaugeBar">
+        <div class="field"><div class="field-label">气压安全上限</div>
+          <div class="gauge-area">
+            <div class="gauge-head"><span style="font-size:13px;color:var(--text2)">当前上限</span><span><span class="gauge-val" id="gVal">5.0</span><span class="gauge-unit">kPa</span></span></div>
+            <div class="gauge-track" id="gTrack">
               <div class="gauge-fill" style="width:50%"></div>
               <div class="gauge-thumb" style="left:50%"></div>
             </div>
-            <div class="gauge-labels">
-              <span>0</span><span>2.5</span><span>5.0</span><span>7.5</span><span>10.0</span>
-            </div>
+            <div class="gauge-ticks"><span>0</span><span>2.5</span><span>5.0</span><span>7.5</span><span>10.0</span></div>
+            <input type="range" min="1" max="10" step="0.1" value="5.0" id="gSlider" style="display:none">
           </div>
-          <input type="range" min="1" max="10" step="0.1" value="5.0"
-                 id="pressureSlider" style="display:none">
         </div>
-
-        <div class="form-row">
-          <span class="form-label">夜间勿扰</span>
-          <input type="time" class="time-input" id="dndStart" value="23:00">
-          <span class="time-sep">→</span>
-          <input type="time" class="time-input" id="dndEnd" value="07:00">
-        </div>
-
-        <div class="form-row" style="margin-top:10px">
-          <span class="form-label">急停</span>
-          <span style="font-size:13px;color:var(--text2)">
-            说 <b>"急停"</b> 或 <b>"停下"</b> 立即泄气停泵
-          </span>
+        <div class="field"><div class="field-label">夜间勿扰</div>
+          <div class="time-row"><input type="time" class="time-box" id="s3_dnd1" value="23:00"><span class="time-arrow">→</span><input type="time" class="time-box" id="s3_dnd2" value="07:00"></div>
         </div>
       </div>
-      <div class="nav-row">
-        <button class="btn btn-back" onclick="prevStep()">←</button>
-        <button class="btn btn-primary" onclick="nextStep()">下一步</button>
+
+      <!-- Step 4 -->
+      <div class="wb-step" data-s="3">
+        <div class="wb-title">✅ 确认配置</div>
+        <div class="wb-sub">检查无误后保存，随时可修改</div>
+        <div class="summary-grid" id="summaryGrid"></div>
       </div>
     </div>
 
-    <!-- Step 4: 确认 -->
-    <div class="step" data-step="4">
-      <div class="card">
-        <div class="card-header">
-          <div class="card-icon green">✓</div>
-          <div>
-            <div class="card-label">STEP 4 · 确认</div>
-            <div class="card-title">配置预览</div>
-            <div class="card-sub">确认无误后保存，随时可以在设置中修改</div>
-          </div>
-        </div>
-        <div class="preview-panel">
-          <div class="preview-title">📋 配置摘要</div>
-          <div class="preview-grid" id="previewGrid"></div>
-        </div>
-      </div>
-      <div class="nav-row">
-        <button class="btn btn-back" onclick="prevStep()">←</button>
-        <button class="btn btn-primary" onclick="finishSetup()">✓ 完成设置</button>
-      </div>
+    <div class="wizard-foot">
+      <button class="wf-back" onclick="prev()">←</button>
+      <button class="wf-next" id="nextBtn" onclick="next()">下一步</button>
     </div>
-
   </div>
-</div>
+</section>
 
-<!-- Success overlay -->
-<div class="success-overlay" id="successOverlay">
-  <div class="success-icon">✨</div>
-  <div class="success-title">设置完成</div>
-  <div class="success-sub">小安已准备好<br>今晚躺下时，我会来问候你的 🌙</div>
-  <button class="btn btn-primary" onclick="closeSuccess()" style="min-width:200px">
-    开始使用
-  </button>
+<footer class="footer"><span>© 2026 XiaoAn · 智能睡眠伴侣</span></footer>
+
+<div class="overlay" id="successOverlay">
+  <div class="overlay-icon">✨</div>
+  <h2>设置完成，小安已就绪</h2>
+  <p>今晚躺下时，你会听到第一声问候<br>晚安，好梦 🌙</p>
+  <button class="overlay-btn" onclick="document.getElementById('successOverlay').classList.remove('show')">开始使用</button>
 </div>
 
 <script>
-let currentStep = 0;
-const totalSteps = 5; // 0-4
+let step = 0;
+const total = 4;
 
-function updateDots() {
-  const dots = document.querySelectorAll('#stepDots .step-dot');
-  dots.forEach((d,i) => {
-    d.classList.remove('done','current');
-    if (i < currentStep) d.classList.add('done');
-    if (i === currentStep) d.classList.add('current');
+function updSteps() {
+  document.querySelectorAll('#wizTop .wizard-step').forEach((el,i) => {
+    el.classList.remove('done','current');
+    if (i < step) el.classList.add('done');
+    if (i === step) el.classList.add('current');
   });
+  document.getElementById('nextBtn').textContent = step === total - 1 ? '✓ 完成设置' : '下一步';
 }
 
-function showStep(n) {
-  document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
-  const target = document.querySelector(`.step[data-step="${n}"]`);
-  if (target) {
-    target.classList.add('active');
-    // re-trigger animation
-    target.style.animation = 'none';
-    target.offsetHeight;
-    target.style.animation = '';
-  }
-  currentStep = n;
-  updateDots();
-  if (n === 4) updatePreview();
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+function show(n) {
+  if (n < 0 || n >= total) return;
+  document.querySelectorAll('.wb-step').forEach(s => s.classList.remove('active'));
+  const t = document.querySelector(`.wb-step[data-s="${n}"]`);
+  if (t) { t.classList.add('active'); t.style.animation = 'none'; t.offsetHeight; t.style.animation = ''; }
+  step = n; updSteps();
+  if (n === 3) updSummary();
 }
 
-function nextStep() {
-  if (currentStep < totalSteps - 1) showStep(currentStep + 1);
+function next() {
+  if (step === total - 1) { finish(); return; }
+  show(step + 1);
 }
-function prevStep() {
-  if (currentStep > 0) showStep(currentStep - 1);
-}
-
-// ── Pill selector ──
-function selectPill(el) {
-  const group = el.parentElement;
-  group.querySelectorAll('.pill-card').forEach(c => c.classList.remove('selected'));
-  el.classList.add('selected');
-  el.querySelector('input').checked = true;
+function prev() { show(step - 1); }
+function selPill(el) {
+  el.parentElement.querySelectorAll('.pill-opt').forEach(c => c.classList.remove('sel'));
+  el.classList.add('sel'); el.querySelector('input').checked = true;
 }
 
-// ── Pressure gauge drag ──
-const gaugeBar = document.getElementById('gaugeBar');
-const gaugeFill = gaugeBar.querySelector('.gauge-fill');
-const gaugeThumb = gaugeBar.querySelector('.gauge-thumb');
-const pressureDisplay = document.getElementById('pressureDisplay');
-const pressureSlider = document.getElementById('pressureSlider');
-let dragging = false;
+// Gauge
+const gTrack = document.getElementById('gTrack');
+const gFill = gTrack.querySelector('.gauge-fill');
+const gThumb = gTrack.querySelector('.gauge-thumb');
+const gVal = document.getElementById('gVal');
+const gSlider = document.getElementById('gSlider');
+let drag = false;
+function upGauge(cx) {
+  const r = gTrack.getBoundingClientRect();
+  let p = Math.max(0, Math.min(1, (cx - r.left) / r.width));
+  const v = Math.round(p * 100) / 10;
+  gFill.style.width = (v * 10) + '%';
+  gThumb.style.left = (v * 10) + '%';
+  gVal.textContent = v.toFixed(1);
+  gSlider.value = v;
+}
+gTrack.addEventListener('mousedown', e => { drag = true; upGauge(e.clientX); });
+gTrack.addEventListener('touchstart', e => { drag = true; upGauge(e.touches[0].clientX); });
+document.addEventListener('mousemove', e => { if (drag) upGauge(e.clientX); });
+document.addEventListener('touchmove', e => { if (drag) upGauge(e.touches[0].clientX); });
+document.addEventListener('mouseup', () => drag = false);
+document.addEventListener('touchend', () => drag = false);
 
-function updateGauge(clientX) {
-  const rect = gaugeBar.getBoundingClientRect();
-  let pct = (clientX - rect.left) / rect.width;
-  pct = Math.max(0, Math.min(1, pct));
-  const val = Math.round(pct * 100) / 10;
-  gaugeFill.style.width = (val * 10) + '%';
-  gaugeThumb.style.left = (val * 10) + '%';
-  pressureDisplay.textContent = val.toFixed(1);
-  pressureSlider.value = val;
+function updSummary() {
+  const sleep = document.getElementById('s1_sleep').value + ' → ' + document.getElementById('s1_wake').value;
+  const city = document.getElementById('s1_city');
+  const cname = city.options[city.selectedIndex].text;
+  const pers = document.querySelector('input[name="personality"]:checked').value === 'gentle' ? '🌸 温柔陪伴' : '⚡ 简洁助理';
+  const al = [];
+  document.querySelectorAll('.tog-sw.on').forEach((t,i) => al.push(['🎵 轻音乐','💡 渐亮灯光','🫧 气囊轻提醒'][i]));
+  const pres = parseFloat(gSlider.value || 5.0);
+  const dnd = document.getElementById('s3_dnd1').value + ' → ' + document.getElementById('s3_dnd2').value;
+  document.getElementById('summaryGrid').innerHTML = [
+    ['睡眠', sleep], ['城市', cname], ['AI 性格', pers],
+    ['闹钟', al.join(' · ') || '无'], ['PC Agent', 'demo_mail/ demo_docs/'],
+    ['气压上限', pres.toFixed(1) + ' kPa'], ['勿扰', dnd], ['急停', '语音触发']
+  ].map(([k,v]) => `<div class="sr"><span class="sr-key">${k}</span><span class="sr-val">${v}</span></div>`).join('');
 }
 
-gaugeBar.addEventListener('mousedown', e => { dragging = true; updateGauge(e.clientX); });
-gaugeBar.addEventListener('touchstart', e => { dragging = true; updateGauge(e.touches[0].clientX); });
-document.addEventListener('mousemove', e => { if (dragging) updateGauge(e.clientX); });
-document.addEventListener('touchmove', e => { if (dragging) updateGauge(e.touches[0].clientX); });
-document.addEventListener('mouseup', () => dragging = false);
-document.addEventListener('touchend', () => dragging = false);
-
-// ── Preview ──
-function updatePreview() {
-  const sleepStart = document.getElementById('sleepStart').value;
-  const sleepEnd = document.getElementById('sleepEnd').value;
-  const loc = document.getElementById('location');
-  const locText = loc.options[loc.selectedIndex].text;
-  const personality = document.querySelector('input[name="personality"]:checked');
-  const pText = personality.value === 'gentle' ? '🌸 温柔陪伴' : '⚡ 简洁助理';
-  const alarms = [];
-  document.querySelectorAll('#steps .toggle.on').forEach((t,i) => {
-    const labels = ['🎵 轻音乐','💡 渐亮灯光','🫧 气囊轻提醒'];
-    alarms.push(labels[i]);
-  });
-  const pressure = parseFloat(pressureSlider.value || 5.0);
-  const dndStart = document.getElementById('dndStart').value;
-  const dndEnd = document.getElementById('dndEnd').value;
-
-  document.getElementById('previewGrid').innerHTML = `
-    <div class="preview-item"><span class="preview-key">睡眠</span><span class="preview-val">${sleepStart} → ${sleepEnd}</span></div>
-    <div class="preview-item"><span class="preview-key">城市</span><span class="preview-val">${locText}</span></div>
-    <div class="preview-item"><span class="preview-key">AI 性格</span><span class="preview-val">${pText}</span></div>
-    <div class="preview-item"><span class="preview-key">闹钟</span><span class="preview-val">${alarms.join(' · ') || '无'}</span></div>
-    <div class="preview-item"><span class="preview-key">PC Agent</span><span class="preview-val">demo_mail/ demo_docs/</span></div>
-    <div class="preview-item"><span class="preview-key">气压上限</span><span class="preview-val">${pressure.toFixed(1)} kPa</span></div>
-    <div class="preview-item"><span class="preview-key">勿扰</span><span class="preview-val">${dndStart} → ${dndEnd}</span></div>
-    <div class="preview-item"><span class="preview-key">急停</span><span class="preview-val">语音触发</span></div>
-  `;
-}
-
-function getConfig() {
-  const sleepStart = document.getElementById('sleepStart').value;
-  const sleepEnd = document.getElementById('sleepEnd').value;
-  const loc = document.getElementById('location').value;
-  const personality = document.querySelector('input[name="personality"]:checked').value;
-  const alarms = [];
-  document.querySelectorAll('#steps .toggle.on').forEach((t,i) => {
-    alarms.push(['music','light','airbag'][i]);
-  });
-  const pressure = parseFloat(pressureSlider.value || 5.0);
-  const dndStart = document.getElementById('dndStart').value;
-  const dndEnd = document.getElementById('dndEnd').value;
-
-  return {
-    sleep: { start: sleepStart, end: sleepEnd },
-    location: loc,
-    personality,
-    alarm: alarms,
+function finish() {
+  const cfg = {
+    sleep: { start: document.getElementById('s1_sleep').value, end: document.getElementById('s1_wake').value },
+    location: document.getElementById('s1_city').value,
+    personality: document.querySelector('input[name="personality"]:checked').value,
+    alarm: (() => { const a = []; document.querySelectorAll('.tog-sw.on').forEach((t,i) => a.push(['music','light','airbag'][i])); return a; })(),
     pc_agent: { allowed_paths: ["demo_mail/", "demo_docs/"] },
-    safety: {
-      pressure_max_kpa: pressure,
-      dnd_start: dndStart,
-      dnd_end: dndEnd
-    }
+    safety: { pressure_max_kpa: parseFloat(gSlider.value || 5.0), dnd_start: document.getElementById('s3_dnd1').value, dnd_end: document.getElementById('s3_dnd2').value }
   };
-}
-
-function finishSetup() {
-  const cfg = getConfig();
-  console.log('📦 配置数据:', JSON.stringify(cfg, null, 2));
-  // fetch('/api/config/save', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(cfg) });
+  console.log('📦 配置:', JSON.stringify(cfg, null, 2));
+  // 部署后: fetch('/api/config/save', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(cfg) });
   document.getElementById('successOverlay').classList.add('show');
-}
-
-function closeSuccess() {
-  document.getElementById('successOverlay').classList.remove('show');
-  showStep(0);
 }
 </script>
 </body>
