@@ -5,6 +5,7 @@
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_err.h"
+#include "esp_intr_alloc.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 
@@ -74,7 +75,8 @@ esp_err_t usart_init(void)
         return err;
     }
 
-    err = uart_driver_install(USART_TJC_UART_NUM, USART_TJC_BUF_SIZE, 0, 0, NULL, 0);
+    err = uart_driver_install(USART_TJC_UART_NUM, USART_TJC_BUF_SIZE, 0, 0, NULL,
+                              ESP_INTR_FLAG_SHARED);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         return err;
     }

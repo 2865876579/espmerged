@@ -10,13 +10,16 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "driver/uart.h"
+#include "esp_err.h"
 #include "wifi.h"
 #include "audio_out.h"
 #include "afe_wake_word.h"
 #include "ws_client.h"
 #include "pump_driver.h"
 #include "opus.h"
+#include "screen_anim.h"
 #include "sensors.h"
+#include "usart.h"
 
 #define WIFI_SSID  "qwe"
 #define WIFI_PASS  "12345678"
@@ -450,13 +453,24 @@ void app_main(void)
         ESP_LOGE(TAG, "Opus task init failed");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
+    esp_err_t tjc_err = usart_init();
+    if (tjc_err != ESP_OK) {
+        ESP_LOGW(TAG, "early TJC-USART init failed: %s", esp_err_to_name(tjc_err));
+    }
+
     audio_out_init();
     pump_driver_init();
+
+    esp_err_t screen_err = screen_anim_start();
+    if (screen_err != ESP_OK) {
+        ESP_LOGW(TAG, "screen start failed: %s", esp_err_to_name(screen_err));
+    }
 
     /* ── 传感器初始化（不依赖 WiFi）── */
     init_sensors();
     xTaskCreate(sensor_task, "sensor", 4096, NULL, 1, NULL);
 
+#if ENABLE_UART_TEXT_INPUT
     uart_config_t uart_cfg = {
         .baud_rate = 115200,
         .data_bits = UART_DATA_8_BITS,
@@ -466,6 +480,7 @@ void app_main(void)
     };
     uart_driver_install(UART_NUM_0, 512, 0, 0, NULL, 0);
     uart_param_config(UART_NUM_0, &uart_cfg);
+#endif
 
     if (wifi_connect(WIFI_SSID, WIFI_PASS) != 0) {
         ESP_LOGE(TAG, "WiFi failed");
@@ -479,11 +494,14 @@ void app_main(void)
         ESP_LOGE(TAG, "AFE init failed");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
+
     vTaskDelay(pdMS_TO_TICKS(1500));
 
     printf("[就绪] 说 '你好小安' 唤醒\n\n");
 
+#if ENABLE_UART_TEXT_INPUT
     uint8_t rx_buf[128];
+#endif
     TickType_t last_ws_restart = xTaskGetTickCount();
     while (1) {
         /* ★ 就寝检测：FSR 触发 → 无需唤醒词，主动问候 */

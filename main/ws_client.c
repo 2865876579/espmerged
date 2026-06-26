@@ -136,7 +136,7 @@ static portMUX_TYPE s_event_spinlock = portMUX_INITIALIZER_UNLOCKED;
 #define OPUS_SAMPLE_RATE    16000
 #define OPUS_CHANNELS       1
 #define AUDIO_QUEUE_DEPTH   512
-#define AUDIO_PLAYER_STACK_BYTES 24576
+#define AUDIO_PLAYER_STACK_BYTES 16384
 #define AUDIO_QUEUE_SEND_TIMEOUT_MS 500
 #define AUDIO_END_SEND_TIMEOUT_MS 5000
 #define AUDIO_PLAYBACK_DRAIN_MS 80
@@ -541,7 +541,7 @@ void ws_client_start(const char *uri)
         .ping_interval_sec = 2,           // 每 3 秒发 ping 防止云 SLB 杀空闲连接
         .pingpong_timeout_sec = 0,          // 应用层 keepalive 已覆盖，协议层不管
         .disable_auto_reconnect = false,
-        .task_stack = 16384,
+        .task_stack = 12288,
     };
 
     s_client = esp_websocket_client_init(&ws_cfg);

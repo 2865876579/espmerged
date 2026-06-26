@@ -8,13 +8,31 @@ idf_component_register(
         "afe_wake_word.c"
         "pump_driver.c"
         "sensors.c"
+        "screen_anim.c"
+        "lcd_ili9488.c"
+        "avatar_rgb666_frames.c"
     INCLUDE_DIRS "."
+    EMBED_FILES
+        "avatar_base_rgb666.bin"
+        "avatar_head_rgb666_frame_0.bin"
+        "avatar_head_rgb666_frame_1.bin"
+        "avatar_head_rgb666_frame_2.bin"
+        "avatar_head_rgb666_frame_3.bin"
+        "avatar_head_rgb666_frame_4.bin"
+        "avatar_head_rgb666_frame_5.bin"
+        "avatar_head_rgb666_frame_6.bin"
+        "avatar_head_rgb666_frame_7.bin"
+        "avatar_head_rgb666_frame_8.bin"
+        "avatar_head_rgb666_frame_9.bin"
+        "avatar_head_rgb666_frame_10.bin"
+        "avatar_head_rgb666_frame_11.bin"
     REQUIRES
         esp_wifi
         esp_event
         esp_netif
         nvs_flash
         driver
+        esp_lcd
         esp_adc
         esp_websocket_client
         cjson

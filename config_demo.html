@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>小安 · 智能枕头</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #080b14;
+  --surface: #111827;
+  --surface2: #1a2236;
+  --surface3: #1f2a3f;
+  --border: #243049;
+  --border-light: #2d3b58;
+  --text: #e8ecf4;
+  --text2: #a3aec6;
+  --text3: #6b7592;
+  --primary: #6c8cff;
+  --primary-dim: rgba(108,140,255,0.12);
+  --primary-glow: rgba(108,140,255,0.25);
+  --green: #4ade80;
+  --green-dim: rgba(74,222,128,0.12);
+  --amber: #fbbf24;
+  --amber-dim: rgba(251,191,36,0.12);
+  --red: #f87171;
+  --red-dim: rgba(248,113,113,0.12);
+  --pink: #f472b6; 
+  --pink-dim: rgba(244,114,182,0.12);
+  --radius: 20px;
+  --radius-sm: 12px;
+  --radius-xs: 8px;
+  --shadow-lg: 0 25px 60px rgba(0,0,0,0.5);
+  --shadow-card: 0 1px 2px rgba(0,0,0,0.3), 0 4px 16px rgba(0,0,0,0.2);
+  --ease: cubic-bezier(0.22,0.61,0.36,1);
+  --ease-out: cubic-bezier(0,0,0.2,1);
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+
+body {
+  font-family: 'Inter', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* ── Background ambient ── */
+.bg-ambient {
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  overflow: hidden;
+}
+.bg-orb {
+  position: absolute; border-radius: 50%; filter: blur(120px); opacity: 0.08;
+}
+.bg-orb.orb1 { width: 600px; height: 600px; background: var(--primary); top: -200px; right: -150px; }
+.bg-orb.orb2 { width: 400px; height: 400px; background: var(--pink); bottom: -100px; left: -100px; }
+.bg-orb.orb3 { width: 300px; height: 300px; background: var(--green); top: 50%; left: 50%; transform: translate(-50%,-50%); }
+
+/* ── Layout ── */
+.app {
+  position: relative; z-index: 1;
+  max-width: 800px; margin: 0 auto; padding: 40px 24px 80px;
+}
+
+/* ── Top bar ── */
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 0 32px;
+}
+.logo {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 18px; font-weight: 600; letter-spacing: -0.3px;
+}
+.logo-emoji {
+  width: 38px; height: 38px; border-radius: 12px;
+  background: linear-gradient(135deg, var(--primary), #8b5cf6);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; box-shadow: 0 8px 24px var(--primary-glow);
+}
+.steps-indicator {
+  display: flex; gap: 6px;
+}
+.step-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--border); transition: all 0.4s var(--ease);
+}
+.step-dot.done { background: var(--primary); }
+.step-dot.current { background: var(--primary); box-shadow: 0 0 10px var(--primary-glow); width: 24px; border-radius: 4px; }
+
+/* ── Step container ── */
+.steps { position: relative; }
+.step {
+  display: none;
+  animation: stepIn 0.5s var(--ease-out) forwards;
+}
+.step.active { display: block; }
+@keyframes stepIn {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Card ── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px;
+  margin-bottom: 14px;
+  box-shadow: var(--shadow-card);
+  transition: border-color 0.3s;
+}
+.card:hover { border-color: var(--border-light); }
+.card-header {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 20px;
+}
+.card-icon {
+  width: 40px; height: 40px; border-radius: var(--radius-sm);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; flex-shrink: 0;
+}
+.card-icon.blue { background: var(--primary-dim); }
+.card-icon.green { background: var(--green-dim); }
+.card-icon.amber { background: var(--amber-dim); }
+.card-icon.red { background: var(--red-dim); }
+.card-icon.pink { background: var(--pink-dim); }
+.card-label { font-size: 11px; color: var(--text3); text-transform: uppercase; letter-spacing: 1px; font-weight: 500; }
+.card-title { font-size: 17px; font-weight: 600; letter-spacing: -0.2px; }
+.card-sub { font-size: 13px; color: var(--text2); margin-top: 4px; }
+
+/* ── Form ── */
+.form-row {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 14px;
+}
+.form-row:last-child { margin-bottom: 0; }
+.form-label {
+  font-size: 13px; color: var(--text2); font-weight: 500;
+  min-width: 70px; flex-shrink: 0;
+}
+
+/* Time input */
+.time-input {
+  background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text); font-size: 15px; padding: 10px 14px;
+  border-radius: var(--radius-xs); outline: none; font-family: inherit;
+  font-weight: 500; width: 110px; text-align: center;
+  transition: all 0.2s;
+}
+.time-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-dim); }
+.time-sep { color: var(--text3); font-size: 14px; }
+
+/* Select */
+.select-wrap { position: relative; flex: 1; }
+.select-wrap select {
+  width: 100%; background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text); font-size: 14px; padding: 10px 36px 10px 14px;
+  border-radius: var(--radius-xs); outline: none; font-family: inherit;
+  appearance: none; cursor: pointer; font-weight: 500;
+  transition: all 0.2s;
+}
+.select-wrap select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-dim); }
+.select-wrap::after {
+  content: ''; position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+  width: 0; height: 0; border-left: 5px solid transparent;
+  border-right: 5px solid transparent; border-top: 6px solid var(--text3);
+  pointer-events: none;
+}
+
+/* Number input */
+.num-input {
+  background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text); font-size: 15px; padding: 10px 12px;
+  border-radius: var(--radius-xs); outline: none; font-family: inherit;
+  font-weight: 500; width: 80px; text-align: center;
+  transition: all 0.2s;
+}
+.num-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-dim); }
+.unit { color: var(--text3); font-size: 13px; font-weight: 500; }
+
+/* ── Pill selector ── */
+.pill-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+}
+.pill-card {
+  background: var(--surface2); border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm); padding: 20px; cursor: pointer;
+  transition: all 0.3s var(--ease); text-align: center;
+  position: relative; overflow: hidden;
+}
+.pill-card:hover { border-color: var(--border-light); transform: translateY(-2px); }
+.pill-card.selected {
+  border-color: var(--primary); background: var(--primary-dim);
+  box-shadow: 0 0 30px rgba(108,140,255,0.1);
+}
+.pill-card .check-mark {
+  position: absolute; top: 10px; right: 12px;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--primary); display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: #fff; opacity: 0; transform: scale(0.6);
+  transition: all 0.3s var(--ease);
+}
+.pill-card.selected .check-mark { opacity: 1; transform: scale(1); }
+.pill-icon { font-size: 32px; margin-bottom: 10px; }
+.pill-name { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+.pill-desc { font-size: 12px; color: var(--text2); line-height: 1.5; }
+.pill-card input { display: none; }
+
+/* ── Toggle switch ── */
+.toggle-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 0; border-bottom: 1px solid var(--border);
+}
+.toggle-row:last-child { border-bottom: none; }
+.toggle-info { flex: 1; }
+.toggle-label { font-size: 14px; font-weight: 500; }
+.toggle-desc { font-size: 12px; color: var(--text2); margin-top: 2px; }
+.toggle {
+  width: 48px; height: 28px; border-radius: 14px;
+  background: var(--border); cursor: pointer; position: relative;
+  transition: background 0.3s; flex-shrink: 0;
+}
+.toggle.on { background: var(--primary); }
+.toggle::after {
+  content: ''; position: absolute; top: 3px; left: 3px;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: #fff; transition: transform 0.3s var(--ease);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+.toggle.on::after { transform: translateX(20px); }
+
+/* ── Safety gauge ── */
+.gauge-wrap { margin-top: 8px; }
+.gauge-bar {
+  height: 8px; border-radius: 4px; background: var(--surface2);
+  position: relative; overflow: visible;
+}
+.gauge-fill {
+  height: 100%; border-radius: 4px; transition: width 0.5s var(--ease);
+  background: linear-gradient(90deg, var(--green), var(--amber) 60%, var(--red));
+}
+.gauge-thumb {
+  position: absolute; top: 50%; transform: translate(-50%,-50%);
+  width: 20px; height: 20px; border-radius: 50%;
+  background: #fff; border: 3px solid var(--primary);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.3); transition: left 0.5s var(--ease);
+  cursor: pointer; z-index: 2;
+}
+.gauge-labels {
+  display: flex; justify-content: space-between;
+  font-size: 10px; color: var(--text3); margin-top: 6px;
+}
+
+/* ── Path tags ── */
+.path-tags { display: flex; gap: 8px; flex-wrap: wrap; }
+.path-tag {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: 20px; font-size: 13px;
+  background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text2); font-family: 'SF Mono','Fira Code','Consolas',monospace;
+}
+.path-tag .tag-icon { font-size: 14px; }
+
+/* ── Preview panel ── */
+.preview-panel {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 18px 20px;
+  margin-top: 20px;
+}
+.preview-title {
+  font-size: 11px; color: var(--text3); text-transform: uppercase;
+  letter-spacing: 1px; margin-bottom: 10px; font-weight: 500;
+}
+.preview-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+  font-size: 13px;
+}
+.preview-item { display: flex; justify-content: space-between; }
+.preview-key { color: var(--text3); }
+.preview-val { color: var(--text); font-weight: 500; }
+
+/* ── Nav buttons ── */
+.nav-row {
+  display: flex; gap: 12px; margin-top: 28px;
+}
+.btn {
+  padding: 14px 28px; border-radius: 14px; font-size: 15px;
+  font-weight: 600; border: none; cursor: pointer; font-family: inherit;
+  transition: all 0.25s var(--ease); letter-spacing: -0.2px;
+}
+.btn:active { transform: scale(0.97); }
+.btn-primary {
+  flex: 1; background: var(--primary); color: #fff;
+  box-shadow: 0 8px 28px var(--primary-glow);
+}
+.btn-primary:hover { filter: brightness(1.1); box-shadow: 0 12px 36px var(--primary-glow); }
+.btn-ghost {
+  background: transparent; border: 1px solid var(--border); color: var(--text2);
+}
+.btn-ghost:hover { border-color: var(--border-light); color: var(--text); }
+.btn-back {
+  background: transparent; border: 1px solid var(--border); color: var(--text2);
+  width: 52px; display: flex; align-items: center; justify-content: center;
+}
+.btn-back:hover { border-color: var(--border-light); color: var(--text); }
+
+/* ── Success state ── */
+.success-overlay {
+  display: none; position: fixed; inset: 0; z-index: 100;
+  background: rgba(8,11,20,0.9); backdrop-filter: blur(8px);
+  align-items: center; justify-content: center; flex-direction: column;
+}
+.success-overlay.show { display: flex; }
+.success-icon {
+  width: 80px; height: 80px; border-radius: 50%;
+  background: var(--green-dim); display: flex; align-items: center; justify-content: center;
+  font-size: 40px; margin-bottom: 24px;
+  animation: successPop 0.6s var(--ease) forwards;
+}
+@keyframes successPop {
+  0% { transform: scale(0); opacity: 0; }
+  60% { transform: scale(1.15); }
+  100% { transform: scale(1); opacity: 1; }
+}
+.success-title { font-size: 24px; font-weight: 700; margin-bottom: 8px; }
+.success-sub { color: var(--text2); font-size: 14px; margin-bottom: 32px; text-align: center; line-height: 1.6; }
+
+/* ── Responsive ── */
+@media (max-width: 480px) {
+  .app { padding: 20px 16px 60px; }
+  .card { padding: 20px; }
+  .pill-row { grid-template-columns: 1fr; }
+  .preview-grid { grid-template-columns: 1fr; }
+  .form-row { flex-wrap: wrap; }
+}
+
+/* ── Step 0: Welcome ── */
+.welcome {
+  text-align: center; padding: 60px 20px;
+}
+.welcome-emoji {
+  font-size: 64px; margin-bottom: 20px;
+  animation: float 3s ease-in-out infinite;
+}
+@keyframes float {
+  0%,100% { transform: translateY(0); }
+  50% { transform: translateY(-12px); }
+}
+.welcome-title { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 10px; }
+.welcome-sub { color: var(--text2); font-size: 15px; line-height: 1.7; max-width: 480px; margin: 0 auto; }
+.welcome-features {
+  display: grid; grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px; max-width: 500px; margin: 32px auto 0;
+}
+.wf-item {
+  background: var(--surface2); border-radius: var(--radius-sm);
+  padding: 16px 12px; text-align: center;
+}
+.wf-icon { font-size: 24px; margin-bottom: 6px; }
+.wf-label { font-size: 12px; color: var(--text2); }
+</style>
+</head>
+<body>
+
+<div class="bg-ambient">
+  <div class="bg-orb orb1"></div>
+  <div class="bg-orb orb2"></div>
+  <div class="bg-orb orb3"></div>
+</div>
+
+<div class="app">
+  <!-- Top bar -->
+  <div class="topbar">
+    <div class="logo">
+      <div class="logo-emoji">🛏️</div>
+      <span>小安</span>
+    </div>
+    <div class="steps-indicator" id="stepDots">
+      <div class="step-dot current"></div>
+      <div class="step-dot"></div>
+      <div class="step-dot"></div>
+      <div class="step-dot"></div>
+      <div class="step-dot"></div>
+    </div>
+  </div>
+
+  <!-- Steps -->
+  <div class="steps" id="steps">
+
+    <!-- Step 0: Welcome -->
+    <div class="step active" data-step="0">
+      <div class="welcome">
+        <div class="welcome-emoji">🌙</div>
+        <div class="welcome-title">欢迎使用智能枕头</div>
+        <div class="welcome-sub">花 2 分钟完成初始化，之后每晚躺下<br>小安就会用你喜欢的方式陪你</div>
+        <div class="welcome-features">
+          <div class="wf-item"><div class="wf-icon">🎙️</div><div class="wf-label">语音对话</div></div>
+          <div class="wf-item"><div class="wf-icon">📊</div><div class="wf-label">睡眠感知</div></div>
+          <div class="wf-item"><div class="wf-icon">🛡️</div><div class="wf-label">智能安全</div></div>
+        </div>
+      </div>
+      <div class="nav-row">
+        <div></div>
+        <button class="btn btn-primary" onclick="nextStep()">开始设置 →</button>
+      </div>
+    </div>
+
+    <!-- Step 1: 睡眠 & 地点 -->
+    <div class="step" data-step="1">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon blue">🌙</div>
+          <div>
+            <div class="card-label">STEP 1 · 习惯</div>
+            <div class="card-title">睡眠时间 & 地点</div>
+            <div class="card-sub">小安会根据你的作息调整问候和勿扰时机</div>
+          </div>
+        </div>
+        <div class="form-row">
+          <span class="form-label">入睡</span>
+          <input type="time" class="time-input" id="sleepStart" value="23:00">
+          <span class="time-sep">→</span>
+          <input type="time" class="time-input" id="sleepEnd" value="07:30">
+          <span class="form-label">起床</span>
+        </div>
+        <div class="form-row" style="margin-top:14px">
+          <span class="form-label">城市</span>
+          <div class="select-wrap">
+            <select id="location">
+              <option value="beijing">北京</option>
+              <option value="shanghai">上海</option>
+              <option value="shenzhen">深圳</option>
+              <option value="chengdu">成都</option>
+              <option value="chongqing" selected>重庆</option>
+              <option value="hangzhou">杭州</option>
+              <option value="guangzhou">广州</option>
+            </select>
+          </div>
+          <span class="unit">天气 & 环境参考</span>
+        </div>
+      </div>
+      <div class="nav-row">
+        <button class="btn btn-back" onclick="prevStep()">←</button>
+        <button class="btn btn-primary" onclick="nextStep()">下一步</button>
+      </div>
+    </div>
+
+    <!-- Step 2: AI 性格 & 闹钟 -->
+    <div class="step" data-step="2">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon pink">💬</div>
+          <div>
+            <div class="card-label">STEP 2 · 个性</div>
+            <div class="card-title">AI 性格</div>
+            <div class="card-sub">选一个你喜欢的聊天风格</div>
+          </div>
+        </div>
+        <div class="pill-row" id="personalityGroup">
+          <label class="pill-card selected" onclick="selectPill(this)">
+            <input type="radio" name="personality" value="gentle" checked>
+            <div class="check-mark">✓</div>
+            <div class="pill-icon">🌸</div>
+            <div class="pill-name">温柔陪伴型</div>
+            <div class="pill-desc">话多不啰嗦，语气慵懒<br>像枕边的朋友，会主动关心</div>
+          </label>
+          <label class="pill-card" onclick="selectPill(this)">
+            <input type="radio" name="personality" value="concise">
+            <div class="check-mark">✓</div>
+            <div class="pill-icon">⚡</div>
+            <div class="pill-name">简洁助理型</div>
+            <div class="pill-desc">话少精炼，直奔主题<br>不多说一句废话，高效执行</div>
+          </label>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon amber">⏰</div>
+          <div>
+            <div class="card-label">STEP 2 · 唤醒</div>
+            <div class="card-title">闹钟偏好</div>
+            <div class="card-sub">起床时用什么方式唤醒你</div>
+          </div>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <div class="toggle-label">🎵 轻音乐</div>
+            <div class="toggle-desc">舒缓钢琴曲，渐强播放</div>
+          </div>
+          <div class="toggle on" onclick="this.classList.toggle('on')"></div>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <div class="toggle-label">💡 渐亮灯光</div>
+            <div class="toggle-desc">模拟日出，30 分钟从暗到亮</div>
+          </div>
+          <div class="toggle" onclick="this.classList.toggle('on')"></div>
+        </div>
+        <div class="toggle-row">
+          <div class="toggle-info">
+            <div class="toggle-label">🫧 气囊轻提醒</div>
+            <div class="toggle-desc">枕头微微起伏，轻柔唤醒</div>
+          </div>
+          <div class="toggle on" onclick="this.classList.toggle('on')"></div>
+        </div>
+      </div>
+      <div class="nav-row">
+        <button class="btn btn-back" onclick="prevStep()">←</button>
+        <button class="btn btn-primary" onclick="nextStep()">下一步</button>
+      </div>
+    </div>
+
+    <!-- Step 3: 隐私 & 安全 -->
+    <div class="step" data-step="3">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon green">💻</div>
+          <div>
+            <div class="card-label">STEP 3 · 隐私</div>
+            <div class="card-title">PC Agent 授权</div>
+            <div class="card-sub">只在以下目录读取文件，不会访问其他路径</div>
+          </div>
+        </div>
+        <div class="path-tags">
+          <span class="path-tag"><span class="tag-icon">📁</span> demo_mail/</span>
+          <span class="path-tag"><span class="tag-icon">📁</span> demo_docs/</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon red">🛡️</div>
+          <div>
+            <div class="card-label">STEP 3 · 安全</div>
+            <div class="card-title">安全策略</div>
+            <div class="card-sub">硬件保护与夜间勿扰</div>
+          </div>
+        </div>
+
+        <div style="margin-bottom:18px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">
+            <span class="form-label">气压上限</span>
+            <span style="font-size:20px;font-weight:700" id="pressureDisplay">5.0</span>
+            <span class="unit">kPa</span>
+          </div>
+          <div class="gauge-wrap">
+            <div class="gauge-bar" id="gaugeBar">
+              <div class="gauge-fill" style="width:50%"></div>
+              <div class="gauge-thumb" style="left:50%"></div>
+            </div>
+            <div class="gauge-labels">
+              <span>0</span><span>2.5</span><span>5.0</span><span>7.5</span><span>10.0</span>
+            </div>
+          </div>
+          <input type="range" min="1" max="10" step="0.1" value="5.0"
+                 id="pressureSlider" style="display:none">
+        </div>
+
+        <div class="form-row">
+          <span class="form-label">夜间勿扰</span>
+          <input type="time" class="time-input" id="dndStart" value="23:00">
+          <span class="time-sep">→</span>
+          <input type="time" class="time-input" id="dndEnd" value="07:00">
+        </div>
+
+        <div class="form-row" style="margin-top:10px">
+          <span class="form-label">急停</span>
+          <span style="font-size:13px;color:var(--text2)">
+            说 <b>"急停"</b> 或 <b>"停下"</b> 立即泄气停泵
+          </span>
+        </div>
+      </div>
+      <div class="nav-row">
+        <button class="btn btn-back" onclick="prevStep()">←</button>
+        <button class="btn btn-primary" onclick="nextStep()">下一步</button>
+      </div>
+    </div>
+
+    <!-- Step 4: 确认 -->
+    <div class="step" data-step="4">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon green">✓</div>
+          <div>
+            <div class="card-label">STEP 4 · 确认</div>
+            <div class="card-title">配置预览</div>
+            <div class="card-sub">确认无误后保存，随时可以在设置中修改</div>
+          </div>
+        </div>
+        <div class="preview-panel">
+          <div class="preview-title">📋 配置摘要</div>
+          <div class="preview-grid" id="previewGrid"></div>
+        </div>
+      </div>
+      <div class="nav-row">
+        <button class="btn btn-back" onclick="prevStep()">←</button>
+        <button class="btn btn-primary" onclick="finishSetup()">✓ 完成设置</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Success overlay -->
+<div class="success-overlay" id="successOverlay">
+  <div class="success-icon">✨</div>
+  <div class="success-title">设置完成</div>
+  <div class="success-sub">小安已准备好<br>今晚躺下时，我会来问候你的 🌙</div>
+  <button class="btn btn-primary" onclick="closeSuccess()" style="min-width:200px">
+    开始使用
+  </button>
+</div>
+
+<script>
+let currentStep = 0;
+const totalSteps = 5; // 0-4
+
+function updateDots() {
+  const dots = document.querySelectorAll('#stepDots .step-dot');
+  dots.forEach((d,i) => {
+    d.classList.remove('done','current');
+    if (i < currentStep) d.classList.add('done');
+    if (i === currentStep) d.classList.add('current');
+  });
+}
+
+function showStep(n) {
+  document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+  const target = document.querySelector(`.step[data-step="${n}"]`);
+  if (target) {
+    target.classList.add('active');
+    // re-trigger animation
+    target.style.animation = 'none';
+    target.offsetHeight;
+    target.style.animation = '';
+  }
+  currentStep = n;
+  updateDots();
+  if (n === 4) updatePreview();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function nextStep() {
+  if (currentStep < totalSteps - 1) showStep(currentStep + 1);
+}
+function prevStep() {
+  if (currentStep > 0) showStep(currentStep - 1);
+}
+
+// ── Pill selector ──
+function selectPill(el) {
+  const group = el.parentElement;
+  group.querySelectorAll('.pill-card').forEach(c => c.classList.remove('selected'));
+  el.classList.add('selected');
+  el.querySelector('input').checked = true;
+}
+
+// ── Pressure gauge drag ──
+const gaugeBar = document.getElementById('gaugeBar');
+const gaugeFill = gaugeBar.querySelector('.gauge-fill');
+const gaugeThumb = gaugeBar.querySelector('.gauge-thumb');
+const pressureDisplay = document.getElementById('pressureDisplay');
+const pressureSlider = document.getElementById('pressureSlider');
+let dragging = false;
+
+function updateGauge(clientX) {
+  const rect = gaugeBar.getBoundingClientRect();
+  let pct = (clientX - rect.left) / rect.width;
+  pct = Math.max(0, Math.min(1, pct));
+  const val = Math.round(pct * 100) / 10;
+  gaugeFill.style.width = (val * 10) + '%';
+  gaugeThumb.style.left = (val * 10) + '%';
+  pressureDisplay.textContent = val.toFixed(1);
+  pressureSlider.value = val;
+}
+
+gaugeBar.addEventListener('mousedown', e => { dragging = true; updateGauge(e.clientX); });
+gaugeBar.addEventListener('touchstart', e => { dragging = true; updateGauge(e.touches[0].clientX); });
+document.addEventListener('mousemove', e => { if (dragging) updateGauge(e.clientX); });
+document.addEventListener('touchmove', e => { if (dragging) updateGauge(e.touches[0].clientX); });
+document.addEventListener('mouseup', () => dragging = false);
+document.addEventListener('touchend', () => dragging = false);
+
+// ── Preview ──
+function updatePreview() {
+  const sleepStart = document.getElementById('sleepStart').value;
+  const sleepEnd = document.getElementById('sleepEnd').value;
+  const loc = document.getElementById('location');
+  const locText = loc.options[loc.selectedIndex].text;
+  const personality = document.querySelector('input[name="personality"]:checked');
+  const pText = personality.value === 'gentle' ? '🌸 温柔陪伴' : '⚡ 简洁助理';
+  const alarms = [];
+  document.querySelectorAll('#steps .toggle.on').forEach((t,i) => {
+    const labels = ['🎵 轻音乐','💡 渐亮灯光','🫧 气囊轻提醒'];
+    alarms.push(labels[i]);
+  });
+  const pressure = parseFloat(pressureSlider.value || 5.0);
+  const dndStart = document.getElementById('dndStart').value;
+  const dndEnd = document.getElementById('dndEnd').value;
+
+  document.getElementById('previewGrid').innerHTML = `
+    <div class="preview-item"><span class="preview-key">睡眠</span><span class="preview-val">${sleepStart} → ${sleepEnd}</span></div>
+    <div class="preview-item"><span class="preview-key">城市</span><span class="preview-val">${locText}</span></div>
+    <div class="preview-item"><span class="preview-key">AI 性格</span><span class="preview-val">${pText}</span></div>
+    <div class="preview-item"><span class="preview-key">闹钟</span><span class="preview-val">${alarms.join(' · ') || '无'}</span></div>
+    <div class="preview-item"><span class="preview-key">PC Agent</span><span class="preview-val">demo_mail/ demo_docs/</span></div>
+    <div class="preview-item"><span class="preview-key">气压上限</span><span class="preview-val">${pressure.toFixed(1)} kPa</span></div>
+    <div class="preview-item"><span class="preview-key">勿扰</span><span class="preview-val">${dndStart} → ${dndEnd}</span></div>
+    <div class="preview-item"><span class="preview-key">急停</span><span class="preview-val">语音触发</span></div>
+  `;
+}
+
+function getConfig() {
+  const sleepStart = document.getElementById('sleepStart').value;
+  const sleepEnd = document.getElementById('sleepEnd').value;
+  const loc = document.getElementById('location').value;
+  const personality = document.querySelector('input[name="personality"]:checked').value;
+  const alarms = [];
+  document.querySelectorAll('#steps .toggle.on').forEach((t,i) => {
+    alarms.push(['music','light','airbag'][i]);
+  });
+  const pressure = parseFloat(pressureSlider.value || 5.0);
+  const dndStart = document.getElementById('dndStart').value;
+  const dndEnd = document.getElementById('dndEnd').value;
+
+  return {
+    sleep: { start: sleepStart, end: sleepEnd },
+    location: loc,
+    personality,
+    alarm: alarms,
+    pc_agent: { allowed_paths: ["demo_mail/", "demo_docs/"] },
+    safety: {
+      pressure_max_kpa: pressure,
+      dnd_start: dndStart,
+      dnd_end: dndEnd
+    }
+  };
+}
+
+function finishSetup() {
+  const cfg = getConfig();
+  console.log('📦 配置数据:', JSON.stringify(cfg, null, 2));
+  // fetch('/api/config/save', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(cfg) });
+  document.getElementById('successOverlay').classList.add('show');
+}
+
+function closeSuccess() {
+  document.getElementById('successOverlay').classList.remove('show');
+  showStep(0);
+}
+</script>
+</body>
+</html>

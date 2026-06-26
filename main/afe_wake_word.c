@@ -305,7 +305,7 @@ int afe_wake_word_init(wake_word_callback_t cb)
 
     // 3. 创建 AFE 配置（MR = 1 麦克风 + 1 参考通道，用于 AEC）
     afe_config_t *cfg = afe_config_init("MR", models,
-                                        AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
+                                        AFE_TYPE_SR, AFE_MODE_LOW_COST);
     if (!cfg) {
         ESP_LOGE(TAG, "afe_config_init failed");
         return -1;
@@ -316,6 +316,7 @@ int afe_wake_word_init(wake_word_callback_t cb)
     cfg->wakenet_init       = true;
     cfg->wakenet_mode       = DET_MODE_95;
     cfg->aec_init           = true;   // ★ xiaozhi：开回声消除
+    cfg->aec_mode           = AEC_MODE_SR_LOW_COST;
     cfg->se_init            = false;
     cfg->ns_init            = false;
     cfg->vad_init           = true;

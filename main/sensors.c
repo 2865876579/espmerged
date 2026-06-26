@@ -41,6 +41,7 @@ static const char *TAG = "sensors";
 
 #define KY005_TX_GPIO           GPIO_NUM_12
 #define KY022_RX_GPIO           GPIO_NUM_13
+#define ENABLE_TJC_USART        1
 
 #define MQ135_ADC_UNIT          ADC_UNIT_1
 #define MQ135_ADC_CHANNEL       ADC_CHANNEL_0
@@ -338,7 +339,12 @@ void init_sensors(void)
     s_ky022_ready = init_result("KY-022", ky022_init(&ky022_cfg));
 
     /* 淘晶驰串口屏 (UART1, GPIO17/18, 115200) */
+#if ENABLE_TJC_USART
     s_usart_ready = init_result("TJC-USART", usart_init());
+#else
+    s_usart_ready = false;
+    ESP_LOGI(TAG, "TJC-USART skipped");
+#endif
 
     /* FSR 零点校准 */
     calibrate_fsr_zero();
