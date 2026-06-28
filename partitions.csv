@@ -1,4 +1,4 @@
-# ESP32-S3 16MB Flash 自定义分区表
+# ESP32-S3 16MB Flash custom partition table
 # Name,   Type, SubType,  Offset,   Size
 # -------------------------------------------------
 nvs,      data, nvs,      0x9000,   0x6000

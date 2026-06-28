@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include "esp_err.h"
 
-#define LED_STRIP_GPIO_NUM 47
+#define LED_STRIP_GPIO_NUM 40
 #define LED_STRIP_COUNT    60
 
 typedef enum {

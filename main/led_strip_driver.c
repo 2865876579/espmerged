@@ -17,11 +17,10 @@
 
 /*
  * GPIO33~37 can be used by Octal PSRAM/Flash on ESP32-S3 N16R8 modules.
- * GPIO40 was the LCD SDO/MISO wire on the screen module and can be physically
- * driven by the LCD even when the ESP-IDF SPI bus does not use MISO. Use a
- * separate output-only data pin for the LED strip.
+ * GPIO47/48 are reserved for the mmWave radar UART. GPIO40 is safe for the LED
+ * strip only when the LCD SDO/MISO wire is left physically disconnected.
  */
-#define LED_STRIP_GPIO                 GPIO_NUM_47
+#define LED_STRIP_GPIO                 GPIO_NUM_40
 #define LED_STRIP_DEFAULT_BRIGHTNESS   56
 #define LED_STRIP_DEFAULT_SPEED_PCT    30
 #define LED_EFFECT_FRAME_MS            120

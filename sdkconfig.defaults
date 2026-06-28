@@ -22,7 +22,7 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # ===== Main task stack =====
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 
-# ===== Timer task stack（泵定时器回调需要更大栈）=====
+# ===== Timer task stack: larger stack for timer callbacks =====
 CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096
 
 # ===== Log level =====
