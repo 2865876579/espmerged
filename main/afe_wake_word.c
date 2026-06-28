@@ -9,6 +9,7 @@
 #include "esp_wn_models.h"
 #include "model_path.h"
 #include "driver/i2s_std.h"
+#include "esp_heap_caps.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -49,6 +50,7 @@ static portMUX_TYPE s_capture_lock = portMUX_INITIALIZER_UNLOCKED;
 #define AFE_FETCH_TASK_STACK_BYTES 8192
 #define AFE_FEED_TASK_CORE 0
 #define AFE_INTERNAL_CORE 1
+#define AFE_ENABLE_AEC 1
 static volatile int s_cooldown = 0;
 
 // I2S1 RX 句柄
@@ -118,16 +120,18 @@ static void afe_feed_task(void *arg)
         return;
     }
 
-    // AEC 参考信号缓冲
-    int16_t *ref_buf = heap_caps_malloc(s_feed_chunksize * sizeof(int16_t), MALLOC_CAP_SPIRAM);
-    if (!ref_buf) {
-        ref_buf = malloc(s_feed_chunksize * sizeof(int16_t));
-    }
-    if (!ref_buf) {
-        ESP_LOGE(TAG, "ref_buf malloc failed");
-        free(feed_buf);
-        vTaskDelete(NULL);
-        return;
+    int16_t *ref_buf = NULL;
+    if (ch >= 2) {
+        ref_buf = heap_caps_malloc(s_feed_chunksize * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+        if (!ref_buf) {
+            ref_buf = malloc(s_feed_chunksize * sizeof(int16_t));
+        }
+        if (!ref_buf) {
+            ESP_LOGE(TAG, "ref_buf malloc failed");
+            free(feed_buf);
+            vTaskDelete(NULL);
+            return;
+        }
     }
 
     ESP_LOGI(TAG, "feed task started, chunk=%d ch=%d aec=%d", s_feed_chunksize, ch, ch >= 2);
@@ -166,8 +170,9 @@ static void afe_feed_task(void *arg)
         // 累积够一帧 → 提取 mono 16-bit → feed
         if (acc_samples >= s_feed_chunksize) {
             cycle++;
-            // ★ AEC：读参考信号（喇叭播放内容），与麦克风数据同步交织
-            audio_out_read_ref(ref_buf, s_feed_chunksize);
+            if (ch >= 2 && ref_buf) {
+                audio_out_read_ref(ref_buf, s_feed_chunksize);
+            }
 
             memset(feed_buf, 0, feed_bytes);
             for (int i = 0; i < s_feed_chunksize; i++) {
@@ -303,8 +308,13 @@ int afe_wake_word_init(wake_word_callback_t cb)
         return -1;
     }
 
-    // 3. 创建 AFE 配置（MR = 1 麦克风 + 1 参考通道，用于 AEC）
-    afe_config_t *cfg = afe_config_init("MR", models,
+    // 3. 创建 AFE 配置。当前主程序内部 RAM 紧张，默认关闭 AEC，保留唤醒词和 VAD。
+    ESP_LOGI(TAG, "heap before AFE create: internal free=%u largest=%u psram free=%u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
+    afe_config_t *cfg = afe_config_init(AFE_ENABLE_AEC ? "MR" : "M", models,
                                         AFE_TYPE_SR, AFE_MODE_LOW_COST);
     if (!cfg) {
         ESP_LOGE(TAG, "afe_config_init failed");
@@ -315,8 +325,10 @@ int afe_wake_word_init(wake_word_callback_t cb)
     cfg->wakenet_model_name = wn_name;
     cfg->wakenet_init       = true;
     cfg->wakenet_mode       = DET_MODE_95;
-    cfg->aec_init           = true;   // ★ xiaozhi：开回声消除
-    cfg->aec_mode           = AEC_MODE_SR_LOW_COST;
+    cfg->aec_init           = AFE_ENABLE_AEC;
+    if (AFE_ENABLE_AEC) {
+        cfg->aec_mode       = AEC_MODE_SR_LOW_COST;
+    }
     cfg->se_init            = false;
     cfg->ns_init            = false;
     cfg->vad_init           = true;
@@ -353,8 +365,13 @@ int afe_wake_word_init(wake_word_callback_t cb)
         return -1;
     }
 
+    ESP_LOGI(TAG, "heap after AFE create: internal free=%u largest=%u psram free=%u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
     // 7. 降到最低阈值（提高灵敏度）
-    s_afe_handle->set_wakenet_threshold(s_afe_data, 1, 0.3f);  // 提高灵敏度
+    s_afe_handle->set_wakenet_threshold(s_afe_data, 1, 0.4f);
 
     // 8. 查询 feed/fetch 参数
     s_feed_channels   = s_afe_handle->get_channel_num(s_afe_data);
@@ -369,8 +386,7 @@ int afe_wake_word_init(wake_word_callback_t cb)
     afe_config_free(cfg);
 
     // Start fetch before feed so AFE has a reader before microphone frames arrive.
-    // ★ xiaozhi 做法：AEC 吃 DRAM，AFE 内部栈走 PSRAM
-    // fetch: PSRAM 栈（8KB 较大）
+    // Keep these large stacks in PSRAM; internal RAM is already tight with LCD/WiFi/AFE.
     BaseType_t fetch_ret = xTaskCreateWithCaps(afe_fetch_task, "afe_fetch",
                                                 AFE_FETCH_TASK_STACK_BYTES, NULL,
                                                 AFE_FETCH_TASK_PRIORITY, NULL,

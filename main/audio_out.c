@@ -6,6 +6,7 @@
 #include "freertos/task.h"
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
 
@@ -27,7 +28,7 @@ static const char *TAG = "audio_out";
 #define I2S1_DIN_GPIO    GPIO_NUM_3
 
 #define SAMPLE_RATE      16000
-#define DMA_DESC_NUM     8     // 512ms 缓冲，覆盖首帧到达前空档
+#define DMA_DESC_NUM     4
 #define DMA_FRAME_NUM    511
 
 static i2s_chan_handle_t s_tx_chan = NULL;
@@ -38,13 +39,23 @@ static volatile bool s_tx_enabled = false;
 // 借鉴 xiaozhi：播放音频时同步抄一份给 AFE 做回声消除
 #define REF_BUF_SAMPLES  9600   // 600ms @ 16kHz
 #define AEC_REF_DELAY_SAMPLES 2300  // 143ms 延迟，保证读写不重叠
-static int16_t s_ref_ring[REF_BUF_SAMPLES];
+static int16_t *s_ref_ring = NULL;
 static volatile int s_ref_pos = 0;  // 总写入样本数（单调递增）
 static portMUX_TYPE s_ref_lock = portMUX_INITIALIZER_UNLOCKED;
 
 
 void audio_out_init(void)
 {
+    s_ref_ring = heap_caps_calloc(REF_BUF_SAMPLES, sizeof(int16_t),
+                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (s_ref_ring) {
+        ESP_LOGI(TAG, "AEC ref ring in PSRAM: %d bytes",
+                 REF_BUF_SAMPLES * (int)sizeof(int16_t));
+    } else {
+        s_ref_ring = calloc(REF_BUF_SAMPLES, sizeof(int16_t));
+        ESP_LOGW(TAG, "AEC ref ring fell back to internal RAM");
+    }
+
     // I2S0 TX — MAX98357A 喇叭
     i2s_chan_config_t tx_chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     tx_chan_cfg.dma_desc_num = DMA_DESC_NUM;
@@ -131,6 +142,9 @@ void audio_out_write(const uint8_t *data, size_t len)
     if (s_tx_chan == NULL || data == NULL || len == 0) return;
     size_t written = 0;
     i2s_channel_write(s_tx_chan, data, len, &written, portMAX_DELAY);
+    if (!s_ref_ring) {
+        return;
+    }
 
     // ★ AEC 参考：抄 mono PCM 到 ring buffer（有锁，双核 cache 同步）
     int frames = (int)len / 4;
@@ -152,6 +166,14 @@ i2s_chan_handle_t audio_out_get_rx_chan(void) { return s_rx_chan; }
 
 int audio_out_read_ref(int16_t *out, int want)
 {
+    if (!out || want <= 0) {
+        return 0;
+    }
+    if (!s_ref_ring) {
+        memset(out, 0, want * sizeof(int16_t));
+        return want;
+    }
+
     // ★ 有锁读：临界区保护，保证跨核 cache 一致
     portENTER_CRITICAL(&s_ref_lock);
     int pos = s_ref_pos;

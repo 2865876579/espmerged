@@ -7,6 +7,7 @@ idf_component_register(
         "ws_client.c"
         "afe_wake_word.c"
         "pump_driver.c"
+        "led_strip_driver.c"
         "sensors.c"
         "screen_anim.c"
         "lcd_ili9488.c"

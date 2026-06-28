@@ -16,6 +16,7 @@
 #include "afe_wake_word.h"
 #include "ws_client.h"
 #include "pump_driver.h"
+#include "led_strip_driver.h"
 #include "opus.h"
 #include "screen_anim.h"
 #include "sensors.h"
@@ -460,6 +461,10 @@ void app_main(void)
 
     audio_out_init();
     pump_driver_init();
+    esp_err_t led_err = led_strip_driver_init();
+    if (led_err != ESP_OK) {
+        ESP_LOGW(TAG, "LED strip init failed: %s", esp_err_to_name(led_err));
+    }
 
     esp_err_t screen_err = screen_anim_start();
     if (screen_err != ESP_OK) {

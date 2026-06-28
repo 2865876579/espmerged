@@ -3,14 +3,17 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_websocket_client.h"
 #include "esp_err.h"
 #include "cJSON.h"
 #include "audio_out.h"
 #include "pump_driver.h"
+#include "led_strip_driver.h"
 #include "screen_anim.h"
 #include "opus.h"
 #include "mbedtls/base64.h"
@@ -36,6 +39,98 @@ static volatile pump_cmd_t s_pump_cmd = PUMP_NONE;
 static volatile int        s_pump_dur = 0;
 static volatile float      s_pump_target_kpa = 0;
 static TaskHandle_t        s_pump_task = NULL;
+
+#define PILLOW_PRESSURE_MIN_KPA 0.0f
+#define PILLOW_PRESSURE_MAX_KPA 10.0f
+
+static float clamp_pillow_pressure_kpa(float value)
+{
+    if (value < PILLOW_PRESSURE_MIN_KPA) return PILLOW_PRESSURE_MIN_KPA;
+    if (value > PILLOW_PRESSURE_MAX_KPA) return PILLOW_PRESSURE_MAX_KPA;
+    return value;
+}
+
+static int clamp_int_value(int value, int low, int high)
+{
+    if (value < low) return low;
+    if (value > high) return high;
+    return value;
+}
+
+static const char *led_effect_name(led_strip_effect_t effect)
+{
+    switch (effect) {
+    case LED_STRIP_EFFECT_BLINK: return "blink";
+    case LED_STRIP_EFFECT_BREATH: return "breath";
+    case LED_STRIP_EFFECT_GRADIENT: return "gradient";
+    case LED_STRIP_EFFECT_SOLID:
+    default:
+        return "solid";
+    }
+}
+
+static led_strip_effect_t led_effect_from_name(const char *mode, led_strip_effect_t fallback)
+{
+    if (!mode) {
+        return fallback;
+    }
+    if (strcmp(mode, "blink") == 0) {
+        return LED_STRIP_EFFECT_BLINK;
+    }
+    if (strcmp(mode, "breath") == 0) {
+        return LED_STRIP_EFFECT_BREATH;
+    }
+    if (strcmp(mode, "gradient") == 0) {
+        return LED_STRIP_EFFECT_GRADIENT;
+    }
+    if (strcmp(mode, "solid") == 0) {
+        return LED_STRIP_EFFECT_SOLID;
+    }
+    return fallback;
+}
+
+static void led_color_from_name(const char *color, uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    if (!color || !r || !g || !b) {
+        return;
+    }
+    if (strcmp(color, "white") == 0) {
+        *r = 255; *g = 255; *b = 255;
+    } else if (strcmp(color, "red") == 0) {
+        *r = 255; *g = 0; *b = 0;
+    } else if (strcmp(color, "orange") == 0) {
+        *r = 255; *g = 90; *b = 0;
+    } else if (strcmp(color, "yellow") == 0) {
+        *r = 255; *g = 180; *b = 0;
+    } else if (strcmp(color, "green") == 0) {
+        *r = 0; *g = 255; *b = 80;
+    } else if (strcmp(color, "cyan") == 0) {
+        *r = 0; *g = 180; *b = 255;
+    } else if (strcmp(color, "blue") == 0) {
+        *r = 40; *g = 90; *b = 255;
+    } else if (strcmp(color, "purple") == 0) {
+        *r = 150; *g = 70; *b = 255;
+    } else if (strcmp(color, "pink") == 0) {
+        *r = 255; *g = 80; *b = 180;
+    } else {
+        *r = 255; *g = 208; *b = 150;
+    }
+}
+
+static const char *led_color_name(uint8_t r, uint8_t g, uint8_t b)
+{
+    if (r == 255 && g == 255 && b == 255) return "white";
+    if (r == 255 && g == 0 && b == 0) return "red";
+    if (r == 255 && g == 90 && b == 0) return "orange";
+    if (r == 255 && g == 180 && b == 0) return "yellow";
+    if (r == 0 && g == 255 && b == 80) return "green";
+    if (r == 0 && g == 180 && b == 255) return "cyan";
+    if (r == 40 && g == 90 && b == 255) return "blue";
+    if (r == 150 && g == 70 && b == 255) return "purple";
+    if (r == 255 && g == 80 && b == 180) return "pink";
+    if (r == 255 && g == 208 && b == 150) return "warm";
+    return "custom";
+}
 
 // ── 上次泵闭环结果（供 read_sensors 回传）──
 static volatile bool  s_last_pump_done    = false;
@@ -113,7 +208,7 @@ static void pump_task(void *arg) {
             /* 动态读数虚高：用 target+1.0kPa 做刹车点，抵消气流误差 */
             int retries = 15;
             while (retries-- > 0) {
-                float stop_at = need_inflate ? (target + 1.0f) : (target - 1.0f);
+                float stop_at = clamp_pillow_pressure_kpa(need_inflate ? (target + 1.0f) : (target - 1.0f));
 
                 if (need_inflate) {
                     pump_set_duty(100);
@@ -171,7 +266,7 @@ static portMUX_TYPE s_event_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
 #define OPUS_SAMPLE_RATE    16000
 #define OPUS_CHANNELS       1
-#define AUDIO_QUEUE_DEPTH   512
+#define AUDIO_QUEUE_DEPTH   128
 #define AUDIO_PLAYER_STACK_BYTES 16384
 #define AUDIO_QUEUE_SEND_TIMEOUT_MS 500
 #define AUDIO_END_SEND_TIMEOUT_MS 5000
@@ -497,11 +592,149 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                         screen_anim_set_subtitle("你", text->valuestring);
                     }
                 }
+                else if (strcmp(type->valuestring, "led_cmd") == 0) {
+                    const char *action = cJSON_GetStringValue(cJSON_GetObjectItem(json, "action"));
+                    bool enabled = true;
+                    uint8_t brightness = 0;
+                    led_strip_effect_t effect = LED_STRIP_EFFECT_SOLID;
+                    uint8_t speed_pct = 30;
+                    uint8_t r = 255;
+                    uint8_t g = 208;
+                    uint8_t b = 150;
+                    bool has_brightness = false;
+                    led_strip_get_effect_state(&enabled, &brightness, &effect,
+                                               &speed_pct, &r, &g, &b);
+
+                    if (action) {
+                        if (strcmp(action, "on") == 0) {
+                            enabled = true;
+                        } else if (strcmp(action, "off") == 0) {
+                            enabled = false;
+                            brightness = 0;
+                            effect = LED_STRIP_EFFECT_SOLID;
+                        } else if (strcmp(action, "toggle") == 0) {
+                            enabled = !enabled;
+                        }
+                    }
+
+                    cJSON *enabled_item = cJSON_GetObjectItem(json, "enabled");
+                    if (!enabled_item) {
+                        enabled_item = cJSON_GetObjectItem(json, "on");
+                    }
+                    if (cJSON_IsBool(enabled_item)) {
+                        enabled = cJSON_IsTrue(enabled_item);
+                    }
+
+                    const char *mode = cJSON_GetStringValue(cJSON_GetObjectItem(json, "mode"));
+                    effect = led_effect_from_name(mode, effect);
+
+                    const char *color = cJSON_GetStringValue(cJSON_GetObjectItem(json, "color"));
+                    led_color_from_name(color, &r, &g, &b);
+
+                    cJSON *r_item = cJSON_GetObjectItem(json, "r");
+                    cJSON *g_item = cJSON_GetObjectItem(json, "g");
+                    cJSON *b_item = cJSON_GetObjectItem(json, "b");
+                    if (cJSON_IsNumber(r_item)) {
+                        r = (uint8_t)clamp_int_value(r_item->valueint, 0, 255);
+                    }
+                    if (cJSON_IsNumber(g_item)) {
+                        g = (uint8_t)clamp_int_value(g_item->valueint, 0, 255);
+                    }
+                    if (cJSON_IsNumber(b_item)) {
+                        b = (uint8_t)clamp_int_value(b_item->valueint, 0, 255);
+                    }
+
+                    cJSON *pct_item = cJSON_GetObjectItem(json, "brightness_pct");
+                    if (cJSON_IsNumber(pct_item)) {
+                        has_brightness = true;
+                        int pct = clamp_int_value(pct_item->valueint, 0, 100);
+                        brightness = (uint8_t)((pct * 255 + 50) / 100);
+                    }
+
+                    cJSON *brightness_item = cJSON_GetObjectItem(json, "brightness");
+                    if (cJSON_IsNumber(brightness_item)) {
+                        has_brightness = true;
+                        int raw = clamp_int_value(brightness_item->valueint, 0, 255);
+                        brightness = (uint8_t)raw;
+                    }
+
+                    cJSON *speed_item = cJSON_GetObjectItem(json, "speed_pct");
+                    if (cJSON_IsNumber(speed_item)) {
+                        speed_pct = (uint8_t)clamp_int_value(speed_item->valueint, 0, 100);
+                    }
+
+                    uint32_t duration_ms = 0;
+                    cJSON *duration_item = cJSON_GetObjectItem(json, "duration_sec");
+                    if (cJSON_IsNumber(duration_item)) {
+                        int duration_sec = clamp_int_value(duration_item->valueint, 0, 600);
+                        duration_ms = (uint32_t)duration_sec * 1000UL;
+                    }
+
+                    if (action && strcmp(action, "off") == 0) {
+                        enabled = false;
+                        brightness = 0;
+                    } else if (enabled && brightness == 0 && !has_brightness) {
+                        brightness = 56;
+                    } else if (action && strcmp(action, "on") == 0 && brightness == 0) {
+                        brightness = 56;
+                    } else if (brightness == 0) {
+                        enabled = false;
+                    } else if (action && strcmp(action, "set") == 0) {
+                        enabled = true;
+                    }
+
+                    led_strip_config_t config = {
+                        .enabled = enabled && brightness > 0,
+                        .brightness = brightness,
+                        .effect = effect,
+                        .speed_pct = speed_pct,
+                        .duration_ms = duration_ms,
+                        .r = r,
+                        .g = g,
+                        .b = b,
+                    };
+
+                    esp_err_t led_ret = led_strip_apply_effect(&config);
+                    printf("[led] cmd action=%s enabled=%d brightness=%u mode=%s color=%s speed=%u duration=%lu ret=%d\n",
+                           action ? action : "",
+                           config.enabled ? 1 : 0,
+                           config.brightness,
+                           led_effect_name(config.effect),
+                           led_color_name(config.r, config.g, config.b),
+                           config.speed_pct,
+                           (unsigned long)config.duration_ms,
+                           led_ret);
+
+                    bool current_enabled = false;
+                    uint8_t current_brightness = 0;
+                    led_strip_effect_t current_effect = LED_STRIP_EFFECT_SOLID;
+                    uint8_t current_speed = 0;
+                    uint8_t current_r = 0;
+                    uint8_t current_g = 0;
+                    uint8_t current_b = 0;
+                    led_strip_get_effect_state(&current_enabled, &current_brightness,
+                                               &current_effect, &current_speed,
+                                               &current_r, &current_g, &current_b);
+                    char led_state[256];
+                    snprintf(led_state, sizeof(led_state),
+                             "{\"type\":\"led_state\",\"enabled\":%s,\"brightness\":%u,\"brightness_pct\":%u,"
+                             "\"mode\":\"%s\",\"speed_pct\":%u,\"color\":\"%s\",\"r\":%u,\"g\":%u,\"b\":%u}",
+                             current_enabled ? "true" : "false",
+                             current_brightness,
+                             (unsigned)((current_brightness * 100 + 127) / 255),
+                             led_effect_name(current_effect),
+                             current_speed,
+                             led_color_name(current_r, current_g, current_b),
+                             current_r, current_g, current_b);
+                    ws_client_send_raw(led_state);
+                }
                 else if (strcmp(type->valuestring, "pillow_cmd") == 0) {
                     const char *action = cJSON_GetStringValue(cJSON_GetObjectItem(json, "action"));
-                    float target_kpa = (float)cJSON_GetNumberValue(cJSON_GetObjectItem(json, "target_kpa"));
+                    cJSON *target_item = cJSON_GetObjectItem(json, "target_kpa");
+                    bool has_target_kpa = cJSON_IsNumber(target_item);
+                    float target_kpa = has_target_kpa ? clamp_pillow_pressure_kpa((float)cJSON_GetNumberValue(target_item)) : 0.0f;
 
-                    if (target_kpa > 0 && target_kpa < 15.0f) {
+                    if (has_target_kpa) {
                         // ★ 闭环模式：有目标气压，边充/放边读传感器，到位即停
                         s_pump_target_kpa = target_kpa;
                         if (strcmp(action, "tilt") == 0) {
@@ -559,6 +792,13 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     cJSON_AddBoolToObject(data_obj, "env_valid", sd.env_valid);
                     cJSON_AddNumberToObject(data_obj, "light_lux", sd.light_lux);
                     cJSON_AddBoolToObject(data_obj, "light_valid", sd.light_valid);
+                    bool led_enabled = false;
+                    uint8_t led_brightness = 0;
+                    led_strip_get_state(&led_enabled, &led_brightness);
+                    cJSON_AddBoolToObject(data_obj, "led_enabled", led_enabled);
+                    cJSON_AddNumberToObject(data_obj, "led_brightness", led_brightness);
+                    cJSON_AddNumberToObject(data_obj, "led_brightness_pct",
+                                            (led_brightness * 100 + 127) / 255);
                     /* ★ 上次泵闭环结果 */
                     if (s_last_pump_done) {
                         cJSON *last = cJSON_CreateObject();
@@ -603,11 +843,27 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
 
 void ws_client_start(const char *uri)
 {
-    // 音频队列：深度 512（只存指针，内存开销极小）
+    // Audio queue depth is capped to keep small queue storage out of internal RAM pressure.
     s_audio_queue = xQueueCreate(AUDIO_QUEUE_DEPTH, sizeof(audio_chunk_t));
+    if (!s_audio_queue) {
+        ESP_LOGE(TAG, "audio queue create failed");
+        return;
+    }
 
     // 音频播放任务：prio=9 高于 feed(8)，确保 DMA 不断流
-    xTaskCreatePinnedToCore(audio_player_task, "audio_player", AUDIO_PLAYER_STACK_BYTES, NULL, 9, NULL, 1);
+    BaseType_t audio_ret = xTaskCreatePinnedToCoreWithCaps(
+        audio_player_task, "audio_player", AUDIO_PLAYER_STACK_BYTES,
+        NULL, 9, NULL, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (audio_ret != pdPASS) {
+        ESP_LOGW(TAG, "audio_player PSRAM stack create failed, fallback internal");
+        audio_ret = xTaskCreatePinnedToCore(
+            audio_player_task, "audio_player", AUDIO_PLAYER_STACK_BYTES,
+            NULL, 9, NULL, 1);
+    }
+    if (audio_ret != pdPASS) {
+        ESP_LOGE(TAG, "audio_player task create failed");
+        return;
+    }
 
     // 气泵任务：独立栈 4KB，不阻塞音频和 websocket
     xTaskCreate(pump_task, "pump", 4096, NULL, 2, &s_pump_task);
