@@ -282,8 +282,43 @@ typedef struct {
     char    *subtitle;
 } audio_chunk_t;
 
+static void free_audio_chunk(audio_chunk_t *chunk)
+{
+    if (!chunk) {
+        return;
+    }
+    free(chunk->data);
+    free(chunk->subtitle);
+    chunk->data = NULL;
+    chunk->subtitle = NULL;
+    chunk->len = 0;
+}
+
+static void clear_audio_queue(void)
+{
+    if (!s_audio_queue) {
+        return;
+    }
+    audio_chunk_t stale;
+    while (xQueueReceive(s_audio_queue, &stale, 0) == pdTRUE) {
+        free_audio_chunk(&stale);
+    }
+}
+
+static void reset_opus_decoder(void)
+{
+    if (!s_decoder) {
+        return;
+    }
+    int ret = opus_decoder_ctl(s_decoder, OPUS_RESET_STATE);
+    if (ret != OPUS_OK) {
+        ESP_LOGW(TAG, "Opus decoder reset failed: %d", ret);
+    }
+}
+
 static void begin_tts_stream(void)
 {
+    clear_audio_queue();
     s_tts_active = true;
     s_tts_guard_until_tick = xTaskGetTickCount() + pdMS_TO_TICKS(TTS_WAKE_GUARD_MS);
     s_turn_done = false;
@@ -299,6 +334,8 @@ static void begin_tts_stream(void)
             ESP_LOGE(TAG, "Opus decoder create failed: %d", err);
             s_decoder = NULL;
         }
+    } else {
+        reset_opus_decoder();
     }
 }
 
@@ -446,15 +483,8 @@ static void audio_player_task(void *arg)
         free(chunk.data);  // 尽早释放
 
         if (samples < 0) {
-            // ★ xiaozhi: FEC → PLC 软降级
-            samples = opus_decode(s_decoder, NULL, 0, pcm, 960, 1);  // FEC 纠错
-        }
-        if (samples < 0) {
-            samples = opus_decode(s_decoder, NULL, 0, pcm, 960, 0);  // PLC 插值
-        }
-        if (samples <= 0) {
-            // ★ FEC/PLC 都失败 → 填静音帧，DMA 不断流，不产生 pop
-            if (samples < 0) ESP_LOGW(TAG, "Opus decode failed (%d), filling silence", samples);
+            ESP_LOGW(TAG, "Opus decode failed (%d), reset decoder and fill silence", samples);
+            reset_opus_decoder();
             memset(pcm, 0, sizeof(pcm));
             samples = 960;
         }
@@ -505,6 +535,7 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
         s_tts_active = false;
         // 通知 audio task 重置解码器 + 停止播放
         {
+            clear_audio_queue();
             audio_chunk_t end = { .data = NULL, .len = 0 };
             xQueueSend(s_audio_queue, &end, 0);
         }
@@ -902,6 +933,7 @@ void ws_client_restart(void)
     s_pending_dialog_end = false;
 
     if (s_audio_queue) {
+        clear_audio_queue();
         audio_chunk_t end = { .data = NULL, .len = 0 };
         xQueueSend(s_audio_queue, &end, 0);
     }
