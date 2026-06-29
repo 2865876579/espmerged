@@ -442,7 +442,7 @@ static void run_dialog(void)
 
 static void on_wake_word(void)
 {
-    if (!s_dialog_active) {
+    if (!s_dialog_active && !ws_client_is_tts_guard_active()) {
         s_wake_event = true;
     }
 }
@@ -509,12 +509,17 @@ void app_main(void)
 #endif
     TickType_t last_ws_restart = xTaskGetTickCount();
     while (1) {
+        bool tts_guard = ws_client_is_tts_guard_active();
+        if (tts_guard) {
+            s_wake_event = false;
+        }
+
         /* ★ 就寝检测：FSR 触发 → 无需唤醒词，主动问候 */
-        if (!s_dialog_active && sensor_person_just_laid_down()) {
+        if (!s_dialog_active && !tts_guard && sensor_person_just_laid_down()) {
             run_sleep_greeting();
         }
 
-        if (s_wake_event) {
+        if (!tts_guard && s_wake_event) {
             run_dialog();
         }
 

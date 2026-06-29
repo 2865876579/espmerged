@@ -24,6 +24,7 @@ static const char *TAG = "ws_client";
 static esp_websocket_client_handle_t s_client = NULL;
 static volatile bool s_connected = false;
 static volatile bool s_tts_active = false;
+static volatile TickType_t s_tts_guard_until_tick = 0;
 static volatile bool s_turn_done = false;
 static volatile bool s_dialog_end = false;
 static volatile bool s_pending_dialog_end = false;
@@ -271,6 +272,7 @@ static portMUX_TYPE s_event_spinlock = portMUX_INITIALIZER_UNLOCKED;
 #define AUDIO_QUEUE_SEND_TIMEOUT_MS 500
 #define AUDIO_END_SEND_TIMEOUT_MS 5000
 #define AUDIO_PLAYBACK_DRAIN_MS 80
+#define TTS_WAKE_GUARD_MS 1500
 #define AUDIO_SUBTITLE_MAX_BYTES 192
 
 // 队列元素：一个 Opus 编码帧
@@ -283,6 +285,7 @@ typedef struct {
 static void begin_tts_stream(void)
 {
     s_tts_active = true;
+    s_tts_guard_until_tick = xTaskGetTickCount() + pdMS_TO_TICKS(TTS_WAKE_GUARD_MS);
     s_turn_done = false;
     s_pending_dialog_end = false;
     s_tts_chunks_queued = 0;
@@ -424,6 +427,7 @@ static void audio_player_task(void *arg)
             tx_active = false;
             if (s_tts_active) {
                 s_tts_active = false;
+                s_tts_guard_until_tick = xTaskGetTickCount() + pdMS_TO_TICKS(TTS_WAKE_GUARD_MS);
                 if (s_pending_dialog_end) {
                     s_dialog_end = true;
                     s_pending_dialog_end = false;
@@ -892,6 +896,7 @@ void ws_client_restart(void)
 
     s_connected = false;
     s_tts_active = false;
+    s_tts_guard_until_tick = xTaskGetTickCount() + pdMS_TO_TICKS(TTS_WAKE_GUARD_MS);
     s_turn_done = false;
     s_dialog_end = false;
     s_pending_dialog_end = false;
@@ -957,6 +962,18 @@ bool ws_client_is_connected(void)
 bool ws_client_is_tts_active(void)
 {
     return s_tts_active;
+}
+
+bool ws_client_is_tts_guard_active(void)
+{
+    if (s_tts_active) {
+        return true;
+    }
+    TickType_t until = s_tts_guard_until_tick;
+    if (until == 0) {
+        return false;
+    }
+    return (int32_t)(until - xTaskGetTickCount()) > 0;
 }
 
 void ws_client_clear_events(void)

@@ -31,6 +31,7 @@ bool ws_client_send_binary(const uint8_t *data, int len);
 
 bool ws_client_is_connected(void);
 bool ws_client_is_tts_active(void);
+bool ws_client_is_tts_guard_active(void);
 void ws_client_clear_events(void);
 bool ws_client_consume_turn_done(void);
 bool ws_client_consume_dialog_end(void);
