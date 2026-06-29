@@ -15,6 +15,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "esp_err.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -90,10 +91,23 @@ void sensor_request_refresh(void);
 bool sensor_person_just_laid_down(void);
 
 /**
- * 轮询红外接收（20ms 非阻塞），收到帧时通过 KY-005 转发。
- * 应放在主循环中高频调用（每 50ms）。
+ * 红外接收预留接口。当前为了先稳定调通 KY-005 发射，主循环调用时不执行接收转发。
+ * GPIO12 仍保留给 KY-022 红外接收。
  */
 void sensor_poll_ir(void);
+
+/**
+ * Control IR devices learned from the standalone fan/humidifier projects.
+ * device: "fan" or "humidifier"
+ * action: "on", "off", or "toggle"
+ */
+esp_err_t sensor_ir_control_device(const char *device, const char *action);
+
+/**
+ * Returns the software-tracked IR device state. The physical device can be
+ * out of sync if its original remote is used.
+ */
+void sensor_ir_get_state(bool *fan_on, bool *humidifier_on);
 
 #ifdef __cplusplus
 }

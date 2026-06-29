@@ -2,6 +2,7 @@
 #define KY005_H
 
 #include <stdint.h>
+#include <stddef.h>
 #include "driver/gpio.h"
 #include "esp_err.h"
 
@@ -44,6 +45,12 @@ esp_err_t ky005_send_nec(uint8_t address, uint8_t command);
  * @return ESP_OK 成功，否则失败
  */
 esp_err_t ky005_send_nec_repeat(void);
+
+/**
+ * Send a raw IR frame as high/low duration pairs in microseconds.
+ * durations format: high1, low1, high2, low2...
+ */
+esp_err_t ky005_send_raw(const uint32_t *durations, size_t num_pairs);
 
 /**
  * 反初始化 KY-005，释放资源

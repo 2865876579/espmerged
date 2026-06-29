@@ -763,6 +763,33 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                              current_r, current_g, current_b);
                     ws_client_send_raw(led_state);
                 }
+                else if (strcmp(type->valuestring, "ir_cmd") == 0) {
+                    const char *device = cJSON_GetStringValue(cJSON_GetObjectItem(json, "device"));
+                    const char *action = cJSON_GetStringValue(cJSON_GetObjectItem(json, "action"));
+                    esp_err_t ir_ret = sensor_ir_control_device(device, action);
+                    bool fan_on = false;
+                    bool humidifier_on = false;
+                    sensor_ir_get_state(&fan_on, &humidifier_on);
+
+                    printf("[ir] cmd device=%s action=%s ret=%d fan=%d humidifier=%d\n",
+                           device ? device : "",
+                           action ? action : "",
+                           ir_ret,
+                           fan_on ? 1 : 0,
+                           humidifier_on ? 1 : 0);
+
+                    char ir_state[256];
+                    snprintf(ir_state, sizeof(ir_state),
+                             "{\"type\":\"ir_state\",\"ok\":%s,\"device\":\"%s\",\"action\":\"%s\","
+                             "\"fan_on\":%s,\"humidifier_on\":%s,\"ret\":%d}",
+                             ir_ret == ESP_OK ? "true" : "false",
+                             device ? device : "",
+                             action ? action : "",
+                             fan_on ? "true" : "false",
+                             humidifier_on ? "true" : "false",
+                             ir_ret);
+                    ws_client_send_raw(ir_state);
+                }
                 else if (strcmp(type->valuestring, "pillow_cmd") == 0) {
                     const char *action = cJSON_GetStringValue(cJSON_GetObjectItem(json, "action"));
                     cJSON *target_item = cJSON_GetObjectItem(json, "target_kpa");
@@ -834,6 +861,11 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     cJSON_AddNumberToObject(data_obj, "led_brightness", led_brightness);
                     cJSON_AddNumberToObject(data_obj, "led_brightness_pct",
                                             (led_brightness * 100 + 127) / 255);
+                    bool fan_on = false;
+                    bool humidifier_on = false;
+                    sensor_ir_get_state(&fan_on, &humidifier_on);
+                    cJSON_AddBoolToObject(data_obj, "fan_on", fan_on);
+                    cJSON_AddBoolToObject(data_obj, "humidifier_on", humidifier_on);
                     /* ★ 上次泵闭环结果 */
                     if (s_last_pump_done) {
                         cJSON *last = cJSON_CreateObject();

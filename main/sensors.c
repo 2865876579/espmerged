@@ -39,9 +39,10 @@ static const char *TAG = "sensors";
 #define FSR_I2C_SCL_GPIO        GPIO_NUM_15   /* ← 原 GPIO11 */
 #define FSR_ADS_ADDR            ADS1115_DEFAULT_ADDR
 
-#define KY005_TX_GPIO           GPIO_NUM_12
-#define KY022_RX_GPIO           GPIO_NUM_13
+#define KY005_TX_GPIO           GPIO_NUM_13
+#define KY022_RX_GPIO           GPIO_NUM_12
 #define ENABLE_TJC_USART        1
+
 
 #define MQ135_ADC_UNIT          ADC_UNIT_1
 #define MQ135_ADC_CHANNEL       ADC_CHANNEL_0
@@ -99,8 +100,47 @@ static bool s_bh1750_ready;
 static bool s_sht31_ready;
 static bool s_mq135_ready;
 static bool s_ky005_ready;
-static bool s_ky022_ready;
 static bool s_usart_ready;
+static bool s_ir_fan_on;
+static bool s_ir_humidifier_on;
+static bool s_ir_fan_known;
+static bool s_ir_humidifier_known;
+
+/**
+ * 风扇电机开关（Fan）— NEC 协议（34 对 / 67 脉冲）
+ *   地址: 0x00, 命令: 0x43
+ */
+static const uint32_t s_signal_fan[] = {
+     9073,  4486,       607,   528,       608,   525,       609,   524,
+      610,   523,       609,   525,       609,   523,       609,   525,
+      608,   525,       609,  1633,       608,  1634,       608,  1632,
+      608,  1633,       609,  1633,       611,  1630,       610,  1633,
+      610,  1631,       608,  1634,       608,  1634,       609,   525,
+      608,   527,       607,   527,       604,   530,       603,  1634,
+      606,   529,       604,   529,       604,   528,       604,  1636,
+      604,  1636,       604,  1640,       601,  1638,       604,   531,
+      602,  1639,       603,     0
+};
+#define FAN_PAIRS  (sizeof(s_signal_fan) / sizeof(s_signal_fan[0]) / 2)
+
+/**
+ * 从遥控器捕获的加湿器控制信号（完整 NEC 帧，34 对脉冲）
+ * Address=0x00, Command=0x00 — toggle 型
+ */
+static const uint32_t HUMIDIFIER_SIGNAL[] = {
+     9076,  4491,       549,   584,       573,   559,       576,   557,
+      574,   559,       574,   557,       573,   560,       572,   560,
+      577,   556,       572,  1660,       549,  1686,       548,  1684,
+      572,  1662,       573,  1658,       548,  1686,       572,  1661,
+      569,  1662,       572,   560,       570,   562,       571,   560,
+      574,   560,       572,   558,       575,   556,       572,   559,
+      570,   560,       547,  1686,       571,  1662,       569,  1661,
+      572,  1660,       569,  1663,       570,  1662,       547,  1685,
+      570,  1663,       569,     0
+};
+#define HUMIDIFIER_SIGNAL_PAIRS  (sizeof(HUMIDIFIER_SIGNAL) / sizeof(HUMIDIFIER_SIGNAL[0]) / 2)
+#define TX_BURST_COUNT           1        /* 每次发射帧数 */
+#define TX_BURST_GAP_MS          100      /* 帧间间隔 (ms) */
 
 /* 最新数据缓存 + 互斥锁 */
 static sensor_data_t s_latest;
@@ -330,13 +370,12 @@ void init_sensors(void)
     };
     s_mq135_ready = init_result("MQ-135", mq135_init(&mq135_config));
 
-    /* KY-005 红外发射 (RMT TX, GPIO12) */
+    /* KY-005 红外发射 (RMT TX, GPIO13) */
     ky005_config_t ky005_cfg = KY005_DEFAULT_CONFIG(KY005_TX_GPIO);
+    ky005_cfg.carrier_hz = 40000;
+    ky005_cfg.carrier_duty_percent = 50.0f;
     s_ky005_ready = init_result("KY-005", ky005_init(&ky005_cfg));
-
-    /* KY-022 红外接收 (RMT RX, GPIO13) */
-    ky022_config_t ky022_cfg = KY022_DEFAULT_CONFIG(KY022_RX_GPIO);
-    s_ky022_ready = init_result("KY-022", ky022_init(&ky022_cfg));
+    ESP_LOGI(TAG, "KY-022 RX reserved on GPIO%d", KY022_RX_GPIO);
 
     /* 淘晶驰串口屏 (UART1, GPIO17/18, 115200) */
 #if ENABLE_TJC_USART
@@ -430,27 +469,131 @@ bool sensor_person_just_laid_down(void)
     return val;
 }
 
-void sensor_poll_ir(void)
+static esp_err_t send_ir_frame(const char *name, const uint32_t *signal, size_t pairs)
 {
-    if (!s_ky022_ready || !s_ky005_ready) return;
+    if (!s_ky005_ready) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t err = ky005_send_raw(signal, pairs);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "[%s] 发送 OK", name);
+    } else {
+        ESP_LOGE(TAG, "[%s] 发送失败 %s", name, esp_err_to_name(err));
+    }
+    return err;
+}
 
-    ky022_nec_frame_t frame;
-    esp_err_t err = ky022_receive_nec(&frame, 20);
-    if (err == ESP_ERR_TIMEOUT) return;
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "IR receive error: %d", err);
-        return;
+static bool parse_ir_action(const char *action, bool current, bool *desired)
+{
+    if (!action || !desired) {
+        return false;
+    }
+    if (strcmp(action, "toggle") == 0) {
+        *desired = !current;
+        return true;
+    }
+    if (strcmp(action, "on") == 0 || strcmp(action, "open") == 0) {
+        *desired = true;
+        return true;
+    }
+    if (strcmp(action, "off") == 0 || strcmp(action, "close") == 0) {
+        *desired = false;
+        return true;
+    }
+    return false;
+}
+
+static esp_err_t send_humidifier_signal(void)
+{
+    if (!s_ky005_ready) {
+        return ESP_ERR_INVALID_STATE;
     }
 
-    ESP_LOGI(TAG, "IR NEC addr=0x%02X cmd=0x%02X", frame.address, frame.command);
+    int ok = 0;
+    esp_err_t last_err = ESP_FAIL;
+    for (int i = 0; i < TX_BURST_COUNT; i++) {
+        esp_err_t err = ky005_send_raw(HUMIDIFIER_SIGNAL, HUMIDIFIER_SIGNAL_PAIRS);
+        if (err == ESP_OK) {
+            ok++;
+        } else {
+            last_err = err;
+            ESP_LOGE(TAG, "TX fail[%d]: %s", i, esp_err_to_name(err));
+        }
+        if (i + 1 < TX_BURST_COUNT) {
+            vTaskDelay(pdMS_TO_TICKS(TX_BURST_GAP_MS));
+        }
+    }
+    ESP_LOGI(TAG, "[加湿器] TX: sent %d/%d frame(s)", ok, TX_BURST_COUNT);
+    return ok > 0 ? ESP_OK : last_err;
+}
 
-    /* 保存到缓存 */
-    portENTER_CRITICAL(&s_data_spinlock);
-    s_latest.ir_address  = frame.address;
-    s_latest.ir_command  = frame.command;
-    s_latest.ir_has_data = true;
-    portEXIT_CRITICAL(&s_data_spinlock);
+static esp_err_t control_toggle_device(const char *name,
+                                       const uint32_t *signal,
+                                       size_t pairs,
+                                       bool *state, bool *known,
+                                       const char *action)
+{
+    if (!action || !state || !known) {
+        return ESP_ERR_INVALID_ARG;
+    }
 
-    /* 红外转发 */
-    ky005_send_nec(frame.address, frame.command);
+    bool desired;
+    if (!parse_ir_action(action, *state, &desired)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t err = send_ir_frame(name, signal, pairs);
+    if (err == ESP_OK) {
+        *state = desired;
+        *known = true;
+        ESP_LOGI(TAG, "IR %s request -> %s", name, desired ? "on" : "off");
+    }
+    return err;
+}
+
+static esp_err_t control_humidifier_device(const char *action)
+{
+    bool desired;
+    if (!parse_ir_action(action, s_ir_humidifier_on, &desired)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t err = send_humidifier_signal();
+    if (err == ESP_OK) {
+        s_ir_humidifier_on = desired;
+        s_ir_humidifier_known = true;
+        ESP_LOGI(TAG, "IR 加湿器 request -> %s", desired ? "on" : "off");
+    }
+    return err;
+}
+
+esp_err_t sensor_ir_control_device(const char *device, const char *action)
+{
+    if (!device || !action) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (strcmp(device, "fan") == 0) {
+        return control_toggle_device("风扇", s_signal_fan, FAN_PAIRS,
+                                     &s_ir_fan_on, &s_ir_fan_known, action);
+    }
+    if (strcmp(device, "humidifier") == 0 || strcmp(device, "humid") == 0) {
+        return control_humidifier_device(action);
+    }
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+void sensor_ir_get_state(bool *fan_on, bool *humidifier_on)
+{
+    if (fan_on) {
+        *fan_on = s_ir_fan_on;
+    }
+    if (humidifier_on) {
+        *humidifier_on = s_ir_humidifier_on;
+    }
+}
+
+void sensor_poll_ir(void)
+{
+    /* TX 调通前不轮询 RX，避免接收转发干扰判断发射波形。GPIO12 仍保留给红外接收。 */
 }

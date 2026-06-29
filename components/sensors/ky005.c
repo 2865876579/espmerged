@@ -249,6 +249,62 @@ esp_err_t ky005_send_nec_repeat(void)
     return rmt_tx_wait_all_done(s_tx_channel, 100);
 }
 
+/* ======================== 原始信号发送 ======================== */
+
+/**
+ * @brief 计算原始信号总时长（微秒），用于设置合适的发送超时
+ */
+static uint32_t calc_signal_duration_us(const uint32_t *durations, size_t num_pairs)
+{
+    uint32_t total = 0;
+    for (size_t i = 0; i < num_pairs * 2; i++) {
+        total += durations[i];
+    }
+    return total;
+}
+
+/**
+ * @brief 发送原始红外信号（自定义脉冲序列）
+ *
+ * 将传入的高低电平持续时间逐对转换为 RMT symbol，通过已初始化的
+ * TX 通道和拷贝编码器发送。支持任意时长的自定义协议信号。
+ *
+ * @param durations   [high1_us, low1_us, high2_us, low2_us, ...] 微秒值数组
+ * @param num_pairs   脉冲对数量
+ * @return esp_err_t
+ */
+esp_err_t ky005_send_raw(const uint32_t *durations, size_t num_pairs)
+{
+    ESP_RETURN_ON_FALSE(s_tx_channel && s_copy_encoder,
+                        ESP_ERR_INVALID_STATE, TAG, "KY-005 未初始化");
+    ESP_RETURN_ON_FALSE(durations && num_pairs > 0,
+                        ESP_ERR_INVALID_ARG, TAG, "无效参数");
+
+    /* 将持续时间对逐个转换为 RMT symbol */
+    rmt_symbol_word_t symbols[num_pairs];
+    for (size_t i = 0; i < num_pairs; i++) {
+        symbols[i] = make_symbol(durations[i * 2], durations[i * 2 + 1]);
+    }
+
+    /* 通过 RMT 发送 */
+    rmt_transmit_config_t transmit_config = {
+        .loop_count = 0,
+    };
+    ESP_RETURN_ON_ERROR(rmt_transmit(s_tx_channel, s_copy_encoder, symbols,
+                                     num_pairs * sizeof(rmt_symbol_word_t),
+                                     &transmit_config),
+                        TAG, "发送原始帧失败");
+
+    /* 计算超时：信号总时长 + 200ms 余量，至少 500ms */
+    uint32_t total_us = calc_signal_duration_us(durations, num_pairs);
+    uint32_t timeout_ms = (total_us / 1000) + 200;
+    if (timeout_ms < 500) {
+        timeout_ms = 500;
+    }
+
+    return rmt_tx_wait_all_done(s_tx_channel, timeout_ms);
+}
+
 /**
  * @brief 反初始化 KY-005，释放所有占用的资源
  *
