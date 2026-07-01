@@ -35,6 +35,8 @@ bool ws_client_is_tts_guard_active(void);
 void ws_client_clear_events(void);
 bool ws_client_consume_turn_done(void);
 bool ws_client_consume_dialog_end(void);
+bool ws_client_consume_listen_once_request(void);
+bool ws_client_has_listen_once_request(void);
 
 #ifdef __cplusplus
 }

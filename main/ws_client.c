@@ -28,6 +28,7 @@ static volatile TickType_t s_tts_guard_until_tick = 0;
 static volatile bool s_turn_done = false;
 static volatile bool s_dialog_end = false;
 static volatile bool s_pending_dialog_end = false;
+static volatile bool s_listen_once_pending = false;
 static QueueHandle_t s_audio_queue = NULL;  // 音频数据队列（WebSocket → Audio Task）
 static volatile uint32_t s_tts_chunks_queued = 0;
 static volatile uint32_t s_tts_chunks_dropped = 0;
@@ -613,12 +614,28 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     cJSON *dialog_end = cJSON_GetObjectItem(json, "dialog_end");
                     end_tts_stream(dialog_end && cJSON_IsTrue(dialog_end));
                 }
+                else if (strcmp(type->valuestring, "listen_once") == 0) {
+                    cJSON *reason = cJSON_GetObjectItem(json, "reason");
+                    portENTER_CRITICAL(&s_event_spinlock);
+                    s_listen_once_pending = true;
+                    portEXIT_CRITICAL(&s_event_spinlock);
+                    printf("[listen_once] %s\n",
+                           (reason && cJSON_IsString(reason)) ? reason->valuestring : "");
+                }
                 else if (strcmp(type->valuestring, "status") == 0) {
                     cJSON *msg = cJSON_GetObjectItem(json, "msg");
                     if (msg && cJSON_IsString(msg)) {
                         printf("[状态] %s\n", msg->valuestring);
+                        screen_anim_set_subtitle("状态", msg->valuestring);
                     }
                     s_turn_done = true;
+                }
+                else if (strcmp(type->valuestring, "screen_status") == 0) {
+                    cJSON *msg = cJSON_GetObjectItem(json, "msg");
+                    if (msg && cJSON_IsString(msg)) {
+                        printf("[screen_status] %s\n", msg->valuestring);
+                        screen_anim_set_subtitle("状态", msg->valuestring);
+                    }
                 }
                 else if (strcmp(type->valuestring, "stt_result") == 0) {
                     cJSON *text = cJSON_GetObjectItem(json, "text");
@@ -963,6 +980,7 @@ void ws_client_restart(void)
     s_turn_done = false;
     s_dialog_end = false;
     s_pending_dialog_end = false;
+    s_listen_once_pending = false;
 
     if (s_audio_queue) {
         clear_audio_queue();
@@ -1066,6 +1084,23 @@ bool ws_client_consume_dialog_end(void)
     portENTER_CRITICAL(&s_event_spinlock);
     bool value = s_dialog_end;
     s_dialog_end = false;
+    portEXIT_CRITICAL(&s_event_spinlock);
+    return value;
+}
+
+bool ws_client_consume_listen_once_request(void)
+{
+    portENTER_CRITICAL(&s_event_spinlock);
+    bool value = s_listen_once_pending;
+    s_listen_once_pending = false;
+    portEXIT_CRITICAL(&s_event_spinlock);
+    return value;
+}
+
+bool ws_client_has_listen_once_request(void)
+{
+    portENTER_CRITICAL(&s_event_spinlock);
+    bool value = s_listen_once_pending;
     portEXIT_CRITICAL(&s_event_spinlock);
     return value;
 }

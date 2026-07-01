@@ -35,9 +35,9 @@ static volatile int  s_capture_last_voice_idx = 0;
 static portMUX_TYPE s_capture_lock = portMUX_INITIALIZER_UNLOCKED;
 
 #define CAPTURE_SAMPLE_RATE          16000
-#define CAPTURE_NO_SPEECH_MS         1500
-#define CAPTURE_END_SILENCE_MS       500
-#define CAPTURE_MIN_VAD_SPEECH_MS    300
+#define CAPTURE_NO_SPEECH_MS         5000
+#define CAPTURE_END_SILENCE_MS       1200
+#define CAPTURE_MIN_VAD_SPEECH_MS    240
 #define CAPTURE_AC_AVG_THRESHOLD     350
 #define CAPTURE_PEAK_THRESHOLD       2500
 #define CAPTURE_ACTIVE_LEVEL         1000
@@ -370,8 +370,8 @@ int afe_wake_word_init(wake_word_callback_t cb)
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
-    // 7. 降到最低阈值（提高灵敏度）
-    s_afe_handle->set_wakenet_threshold(s_afe_data, 1, 0.4f);
+    // 7. 提高唤醒阈值，降低扬声器回放和环境声误唤醒概率。
+    s_afe_handle->set_wakenet_threshold(s_afe_data, 1, 0.5f);
 
     // 8. 查询 feed/fetch 参数
     s_feed_channels   = s_afe_handle->get_channel_num(s_afe_data);

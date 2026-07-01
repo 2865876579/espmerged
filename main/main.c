@@ -336,6 +336,13 @@ static record_result_t record_and_send(void)
     int peak = 0;
     int active = 0;
     bool has_energy = pcm_has_speech(pcm, samples, &ac_avg, &peak, &active);
+    ESP_LOGI(TAG, "record stats: ms=%d vad=%d energy=%d ac=%d peak=%d active=%d",
+             samples * 1000 / SAMPLE_RATE,
+             vad_had_speech ? 1 : 0,
+             has_energy ? 1 : 0,
+             ac_avg,
+             peak,
+             active);
     if (!vad_had_speech && !has_energy) {
         free(pcm);
         return RECORD_NO_SPEECH;
@@ -386,6 +393,34 @@ static void run_sleep_greeting(void)
     turn_wait_result_t result = wait_for_turn_result(TURN_REPLY_TIMEOUT_MS);
     (void)result;
     // TTS 播完，回到正常唤醒模式
+}
+
+static void run_one_shot_reply(void)
+{
+    s_dialog_active = true;
+    s_wake_event = false;
+
+    if (!wait_for_ws_connected(WS_READY_TIMEOUT_MS)) {
+        s_dialog_active = false;
+        return;
+    }
+
+    ws_client_clear_events();
+    printf("\n[一次回答] 主动询问后录音\n");
+
+    record_result_t rec = record_and_send();
+    if (rec == RECORD_SENT) {
+        turn_wait_result_t result = wait_for_turn_result(TURN_REPLY_TIMEOUT_MS);
+        (void)result;
+    } else if (rec == RECORD_NO_SPEECH) {
+        printf("[一次回答] 未检测到回答，跳过\n");
+    } else {
+        printf("[一次回答] 录音上传失败\n");
+    }
+
+    ws_client_clear_events();
+    s_wake_event = false;
+    s_dialog_active = false;
 }
 
 static void run_dialog(void)
@@ -442,7 +477,14 @@ static void run_dialog(void)
 
 static void on_wake_word(void)
 {
-    if (!s_dialog_active && !ws_client_is_tts_guard_active()) {
+    bool tts_guard = ws_client_is_tts_guard_active();
+    bool listen_once = ws_client_has_listen_once_request();
+    ESP_LOGI(TAG, "wake callback: active=%d guard=%d listen_once=%d",
+             s_dialog_active ? 1 : 0,
+             tts_guard ? 1 : 0,
+             listen_once ? 1 : 0);
+
+    if (!s_dialog_active && !tts_guard) {
         s_wake_event = true;
     }
 }
@@ -512,6 +554,11 @@ void app_main(void)
         bool tts_guard = ws_client_is_tts_guard_active();
         if (tts_guard) {
             s_wake_event = false;
+        }
+
+        if (!s_dialog_active && !tts_guard && ws_client_consume_listen_once_request()) {
+            run_one_shot_reply();
+            continue;
         }
 
         /* ★ 就寝检测：FSR 触发 → 无需唤醒词，主动问候 */

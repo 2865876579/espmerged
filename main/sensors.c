@@ -409,6 +409,16 @@ void sensor_task(void *arg)
         memcpy(&s_latest, &data, sizeof(s_latest));
         portEXIT_CRITICAL(&s_data_spinlock);
 
+        ESP_LOGI(
+            TAG,
+            "[pressure] kPa=%.2f fsr=[%.2f, %.2f, %.2f, %.2f]N",
+            data.pressure_kpa,
+            data.fsr_force_n[0],
+            data.fsr_force_n[1],
+            data.fsr_force_n[2],
+            data.fsr_force_n[3]
+        );
+
         /* ── 人员就寝检测（FSR 力敏传感器）─────── */
         bool person_now = false;
         for (int i = 0; i < FSR_SENSOR_COUNT; i++) {
