@@ -11,8 +11,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
+#include "driver/uart.h"
 #include "esp_check.h"
 #include "esp_err.h"
+#include "esp_intr_alloc.h"
 #include "esp_log.h"
 #include "hal/adc_types.h"
 #include "ads1115_fsr402.h"
@@ -43,6 +45,15 @@ static const char *TAG = "sensors";
 #define KY022_RX_GPIO           GPIO_NUM_12
 #define ENABLE_TJC_USART        1
 
+#define RADAR_UART_NUM          UART_NUM_2
+#define RADAR_RX_GPIO           GPIO_NUM_47  /* ESP32 RX <- R60ABD1 TX */
+#define RADAR_TX_GPIO           GPIO_NUM_48  /* ESP32 TX -> R60ABD1 RX */
+#define RADAR_UART_BAUD         115200
+#define RADAR_UART_BUF_SIZE     512
+#define RADAR_STALE_MS          6000
+#define RADAR_QUERY_INTERVAL_MS 3000
+#define RADAR_DEBUG_FRAME_LIMIT 12
+
 
 #define MQ135_ADC_UNIT          ADC_UNIT_1
 #define MQ135_ADC_CHANNEL       ADC_CHANNEL_0
@@ -58,6 +69,13 @@ static const char *TAG = "sensors";
 #define MCP_PRESSURE_MAX_KPA    10.0f
 #define MCP_OUTPUT_MIN_RATIO    0.04f
 #define MCP_OUTPUT_MAX_RATIO    0.94f
+
+/* NTC 10K 3950 on ADS1115-MCP A1: 3V3 -> NTC -> A1 -> 10k -> GND */
+#define NECK_NTC_SUPPLY_V       3.3f
+#define NECK_NTC_FIXED_OHM      10000.0f
+#define NECK_NTC_R0_OHM         10000.0f
+#define NECK_NTC_BETA           3950.0f
+#define NECK_NTC_T0_K           298.15f
 
 /* ═══════════════════════════════════════════════════════════
  *  静态变量
@@ -105,6 +123,13 @@ static bool s_ir_fan_on;
 static bool s_ir_humidifier_on;
 static bool s_ir_fan_known;
 static bool s_ir_humidifier_known;
+static bool s_radar_ready;
+static volatile bool s_radar_person_gate;
+static uint8_t s_radar_heart_bpm;
+static uint8_t s_radar_breath_bpm;
+static TickType_t s_radar_last_update_tick;
+static uint8_t s_radar_debug_frames;
+static portMUX_TYPE s_radar_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
 /**
  * 风扇电机开关（Fan）— NEC 协议（34 对 / 67 脉冲）
@@ -195,6 +220,253 @@ static float mcp_voltage_to_pressure_kpa(float sensor_voltage)
              * (sensor_voltage - v_min) / (v_max - v_min);
 }
 
+static bool ntc_voltage_to_temp_c(float voltage, float *temp_c)
+{
+    if (!temp_c || voltage <= 0.02f || voltage >= (NECK_NTC_SUPPLY_V - 0.02f)) {
+        return false;
+    }
+    float r_ntc = NECK_NTC_FIXED_OHM * (NECK_NTC_SUPPLY_V / voltage - 1.0f);
+    if (!isfinite(r_ntc) || r_ntc <= 0.0f) {
+        return false;
+    }
+    float inv_t = (1.0f / NECK_NTC_T0_K) + (logf(r_ntc / NECK_NTC_R0_OHM) / NECK_NTC_BETA);
+    if (!isfinite(inv_t) || inv_t <= 0.0f) {
+        return false;
+    }
+    *temp_c = (1.0f / inv_t) - 273.15f;
+    return isfinite(*temp_c) && *temp_c > -40.0f && *temp_c < 125.0f;
+}
+
+static uint8_t radar_checksum(const uint8_t *data, size_t len)
+{
+    uint8_t sum = 0;
+    for (size_t i = 0; i < len; i++) {
+        sum = (uint8_t)(sum + data[i]);
+    }
+    return sum;
+}
+
+static void radar_send_cmd(uint8_t control, uint8_t command, const uint8_t *payload, uint16_t payload_len)
+{
+    if (!s_radar_ready) return;
+    if (payload_len > 32) return;
+
+    uint8_t frame[2 + 1 + 1 + 2 + 32 + 1 + 2];
+    size_t idx = 0;
+    frame[idx++] = 0x53;
+    frame[idx++] = 0x59;
+    frame[idx++] = control;
+    frame[idx++] = command;
+    frame[idx++] = (uint8_t)(payload_len >> 8);
+    frame[idx++] = (uint8_t)(payload_len & 0xFF);
+    for (uint16_t i = 0; i < payload_len; i++) {
+        frame[idx++] = payload[i];
+    }
+    frame[idx] = radar_checksum(frame, idx);
+    idx++;
+    frame[idx++] = 0x54;
+    frame[idx++] = 0x43;
+    uart_write_bytes(RADAR_UART_NUM, (const char *)frame, idx);
+}
+
+static void radar_enable_measurement(void)
+{
+    uint8_t enable = 0x01;
+    radar_send_cmd(0x81, 0x00, &enable, 1);  /* breath monitor on */
+    radar_send_cmd(0x85, 0x00, &enable, 1);  /* heart monitor on */
+}
+
+static void radar_query_values(void)
+{
+    uint8_t query = 0x0F;
+    radar_send_cmd(0x81, 0x82, &query, 1);  /* breath value query */
+    radar_send_cmd(0x85, 0x82, &query, 1);  /* heart value query */
+}
+
+static void radar_set_values(uint8_t heart_bpm, uint8_t breath_bpm, bool update_heart, bool update_breath)
+{
+    if (!s_radar_person_gate) {
+        return;
+    }
+
+    portENTER_CRITICAL(&s_radar_spinlock);
+    if (update_heart) {
+        s_radar_heart_bpm = heart_bpm;
+    }
+    if (update_breath) {
+        s_radar_breath_bpm = breath_bpm;
+    }
+    s_radar_last_update_tick = xTaskGetTickCount();
+    portEXIT_CRITICAL(&s_radar_spinlock);
+}
+
+static void radar_reset_values(void)
+{
+    portENTER_CRITICAL(&s_radar_spinlock);
+    s_radar_heart_bpm = 0;
+    s_radar_breath_bpm = 0;
+    s_radar_last_update_tick = 0;
+    portEXIT_CRITICAL(&s_radar_spinlock);
+}
+
+static void radar_set_person_gate(bool enabled)
+{
+    bool was_enabled = s_radar_person_gate;
+    s_radar_person_gate = enabled;
+    if (!enabled) {
+        radar_reset_values();
+    } else if (!was_enabled) {
+        radar_enable_measurement();
+        radar_query_values();
+    }
+}
+
+static void radar_get_values(uint8_t *heart_bpm, uint8_t *breath_bpm, bool *valid)
+{
+    uint8_t heart;
+    uint8_t breath;
+    TickType_t last_tick;
+
+    portENTER_CRITICAL(&s_radar_spinlock);
+    heart = s_radar_heart_bpm;
+    breath = s_radar_breath_bpm;
+    last_tick = s_radar_last_update_tick;
+    portEXIT_CRITICAL(&s_radar_spinlock);
+
+    bool fresh = false;
+    if (s_radar_person_gate && last_tick != 0) {
+        fresh = (xTaskGetTickCount() - last_tick) <= pdMS_TO_TICKS(RADAR_STALE_MS);
+    }
+
+    if (!fresh) {
+        heart = 0;
+        breath = 0;
+    }
+    if (heart_bpm) *heart_bpm = heart;
+    if (breath_bpm) *breath_bpm = breath;
+    if (valid) *valid = fresh && (heart > 0 || breath > 0);
+}
+
+static void radar_handle_frame(const uint8_t *frame, size_t frame_len)
+{
+    if (!frame || frame_len < 9) return;
+    if (frame[0] != 0x53 || frame[1] != 0x59) return;
+    if (frame[frame_len - 2] != 0x54 || frame[frame_len - 1] != 0x43) return;
+
+    uint16_t payload_len = ((uint16_t)frame[4] << 8) | frame[5];
+    if ((size_t)(payload_len + 9) != frame_len) return;
+    uint8_t sum = radar_checksum(frame, (size_t)payload_len + 6);
+    if (sum != frame[6 + payload_len]) {
+        ESP_LOGW(TAG, "R60ABD1 checksum mismatch");
+        return;
+    }
+
+    uint8_t control = frame[2];
+    uint8_t command = frame[3];
+    const uint8_t *payload = &frame[6];
+    if (payload_len < 1) return;
+
+    if (s_radar_debug_frames > 0 && (control == 0x81 || control == 0x85)) {
+        ESP_LOGI(TAG, "R60ABD1 frame ctrl=0x%02X cmd=0x%02X len=%u data0=%u",
+                 control, command, payload_len, payload[0]);
+        s_radar_debug_frames--;
+    }
+
+    if (control == 0x85 && (command == 0x02 || command == 0x82)) {
+        radar_set_values(payload[0], 0, true, false);
+    } else if (control == 0x81 && (command == 0x02 || command == 0x82)) {
+        radar_set_values(0, payload[0], false, true);
+    }
+}
+
+static void radar_uart_task(void *arg)
+{
+    (void)arg;
+    uint8_t buf[128];
+    size_t used = 0;
+    TickType_t last_enable = 0;
+    TickType_t last_query = 0;
+
+    while (1) {
+        if (s_radar_person_gate &&
+            (xTaskGetTickCount() - last_enable) >= pdMS_TO_TICKS(5000)) {
+            radar_enable_measurement();
+            last_enable = xTaskGetTickCount();
+        }
+        if (s_radar_person_gate &&
+            (xTaskGetTickCount() - last_query) >= pdMS_TO_TICKS(RADAR_QUERY_INTERVAL_MS)) {
+            radar_query_values();
+            last_query = xTaskGetTickCount();
+        }
+        if (used >= sizeof(buf)) {
+            used = 0;
+        }
+
+        int len = uart_read_bytes(RADAR_UART_NUM, buf + used, sizeof(buf) - used,
+                                  pdMS_TO_TICKS(100));
+        if (len <= 0) {
+            continue;
+        }
+        used += (size_t)len;
+
+        while (used >= 9) {
+            size_t start = 0;
+            while (start + 1 < used && !(buf[start] == 0x53 && buf[start + 1] == 0x59)) {
+                start++;
+            }
+            if (start > 0) {
+                memmove(buf, buf + start, used - start);
+                used -= start;
+            }
+            if (used < 9) break;
+
+            uint16_t payload_len = ((uint16_t)buf[4] << 8) | buf[5];
+            size_t frame_len = (size_t)payload_len + 9;
+            if (frame_len > sizeof(buf)) {
+                memmove(buf, buf + 2, used - 2);
+                used -= 2;
+                continue;
+            }
+            if (used < frame_len) break;
+
+            radar_handle_frame(buf, frame_len);
+            memmove(buf, buf + frame_len, used - frame_len);
+            used -= frame_len;
+        }
+    }
+}
+
+static esp_err_t init_r60abd1_radar(void)
+{
+    const uart_config_t uart_config = {
+        .baud_rate = RADAR_UART_BAUD,
+        .data_bits = UART_DATA_8_BITS,
+        .parity    = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+    ESP_RETURN_ON_ERROR(uart_param_config(RADAR_UART_NUM, &uart_config), TAG,
+                        "radar uart config");
+    ESP_RETURN_ON_ERROR(uart_set_pin(RADAR_UART_NUM, RADAR_TX_GPIO, RADAR_RX_GPIO,
+                                     UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE),
+                        TAG, "radar uart pin");
+    ESP_RETURN_ON_ERROR(uart_driver_install(RADAR_UART_NUM, RADAR_UART_BUF_SIZE,
+                                            0, 0, NULL, ESP_INTR_FLAG_SHARED),
+                        TAG, "radar uart driver");
+    s_radar_ready = true;
+    s_radar_debug_frames = RADAR_DEBUG_FRAME_LIMIT;
+    radar_enable_measurement();
+    BaseType_t ret = xTaskCreate(radar_uart_task, "r60abd1", 4096, NULL, 1, NULL);
+    if (ret != pdPASS) {
+        s_radar_ready = false;
+        return ESP_ERR_NO_MEM;
+    }
+    ESP_LOGI(TAG, "R60ABD1 UART2 init OK: RX=GPIO%d TX=GPIO%d",
+             RADAR_RX_GPIO, RADAR_TX_GPIO);
+    return ESP_OK;
+}
+
 static void init_fsr_models(void)
 {
     const fsr402_config_t config = {
@@ -248,6 +520,28 @@ static void read_mcp5010dp(sensor_data_t *out)
     if (s_usart_ready) usart_tjc_set_t7_pressure_kpa(kpa);
     ESP_LOGD(TAG, "MCP5010DP raw=%d adc=%.3fV sensor=%.3fV kpa=%.2f",
              raw, adc_v, sensor_v, kpa);
+}
+
+static void read_neck_ntc(sensor_data_t *out)
+{
+    out->neck_temp_valid = false;
+    if (!s_mcp_ads_ready || !s_i2c0_mutex) return;
+
+    if (xSemaphoreTake(s_i2c0_mutex, pdMS_TO_TICKS(200)) != pdTRUE) return;
+    int16_t raw;
+    float adc_v;
+    esp_err_t err = read_ads_voltage(&s_mcp_ads, ADS1115_MUX_AIN1_GND, &raw, &adc_v);
+    xSemaphoreGive(s_i2c0_mutex);
+
+    if (err != ESP_OK) return;
+    float temp_c;
+    if (!ntc_voltage_to_temp_c(adc_v, &temp_c)) {
+        ESP_LOGW(TAG, "neck NTC invalid raw=%d voltage=%.3fV", raw, adc_v);
+        return;
+    }
+    out->neck_temp_c = temp_c;
+    out->neck_temp_valid = true;
+    ESP_LOGD(TAG, "neck NTC raw=%d voltage=%.3fV temp=%.2fC", raw, adc_v, temp_c);
 }
 
 static void read_fsr402_all(sensor_data_t *out)
@@ -370,6 +664,8 @@ void init_sensors(void)
     };
     s_mq135_ready = init_result("MQ-135", mq135_init(&mq135_config));
 
+    s_radar_ready = init_result("R60ABD1", init_r60abd1_radar());
+
     /* KY-005 红外发射 (RMT TX, GPIO13) */
     ky005_config_t ky005_cfg = KY005_DEFAULT_CONFIG(KY005_TX_GPIO);
     ky005_cfg.carrier_hz = 40000;
@@ -401,31 +697,53 @@ void sensor_task(void *arg)
         memset(&data, 0, sizeof(data));
 
         read_mcp5010dp(&data);
+        read_neck_ntc(&data);
         read_fsr402_all(&data);
         read_environment(&data);
+
+        bool person_now = false;
+        for (int i = 0; i < FSR_SENSOR_COUNT; i++) {
+            if (data.fsr_valid[i] && data.fsr_force_n[i] > PERSON_FSR_THRESHOLD_N) {
+                person_now = true;
+                break;
+            }
+        }
+        radar_set_person_gate(person_now);
+        radar_get_values(&data.radar_heart_bpm, &data.radar_breath_bpm, &data.radar_valid);
 
         /* 更新缓存（临界区） */
         portENTER_CRITICAL(&s_data_spinlock);
         memcpy(&s_latest, &data, sizeof(s_latest));
         portEXIT_CRITICAL(&s_data_spinlock);
 
-        ESP_LOGI(
-            TAG,
-            "[pressure] kPa=%.2f fsr=[%.2f, %.2f, %.2f, %.2f]N",
-            data.pressure_kpa,
-            data.fsr_force_n[0],
-            data.fsr_force_n[1],
-            data.fsr_force_n[2],
-            data.fsr_force_n[3]
-        );
+        if (data.neck_temp_valid) {
+            ESP_LOGI(
+                TAG,
+                "[pressure] kPa=%.2f neck_temp=%.1fC fsr=[%.2f, %.2f, %.2f, %.2f]N radar_hr=%u radar_br=%u",
+                data.pressure_kpa,
+                data.neck_temp_c,
+                data.fsr_force_n[0],
+                data.fsr_force_n[1],
+                data.fsr_force_n[2],
+                data.fsr_force_n[3],
+                data.radar_heart_bpm,
+                data.radar_breath_bpm
+            );
+        } else {
+            ESP_LOGI(
+                TAG,
+                "[pressure] kPa=%.2f neck_temp=NA fsr=[%.2f, %.2f, %.2f, %.2f]N radar_hr=%u radar_br=%u",
+                data.pressure_kpa,
+                data.fsr_force_n[0],
+                data.fsr_force_n[1],
+                data.fsr_force_n[2],
+                data.fsr_force_n[3],
+                data.radar_heart_bpm,
+                data.radar_breath_bpm
+            );
+        }
 
         /* ── 人员就寝检测（FSR 力敏传感器）─────── */
-        bool person_now = false;
-        for (int i = 0; i < FSR_SENSOR_COUNT; i++) {
-            if (data.fsr_valid[i] && data.fsr_force_n[i] > PERSON_FSR_THRESHOLD_N) {
-                person_now = true; break;
-            }
-        }
         if (person_now) {
             if (++s_person_debounce >= PERSON_DEBOUNCE_COUNT && !s_person_on_bed) {
                 s_person_event = true;

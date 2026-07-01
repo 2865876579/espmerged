@@ -269,7 +269,7 @@ static portMUX_TYPE s_event_spinlock = portMUX_INITIALIZER_UNLOCKED;
 #define OPUS_SAMPLE_RATE    16000
 #define OPUS_CHANNELS       1
 #define AUDIO_QUEUE_DEPTH   128
-#define AUDIO_PLAYER_STACK_BYTES 16384
+#define AUDIO_PLAYER_STACK_BYTES 32768
 #define AUDIO_QUEUE_SEND_TIMEOUT_MS 500
 #define AUDIO_END_SEND_TIMEOUT_MS 5000
 #define AUDIO_PLAYBACK_DRAIN_MS 80
@@ -425,8 +425,8 @@ static bool enqueue_subtitle_marker(const char *text)
 static void audio_player_task(void *arg)
 {
     // 大数组在这个任务栈里（不影响 WebSocket 任务）
-    int16_t pcm[960];           // 60ms @16kHz
-    int16_t stereo[960 * 2];    // mono → stereo
+    static int16_t pcm[960];           // 60ms @16kHz
+    static int16_t stereo[960 * 2];    // mono → stereo
 
     audio_chunk_t chunk;
     int played_frames = 0;
@@ -858,6 +858,11 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     cJSON_AddBoolToObject(data_obj, "mq135_valid", sd.mq135_valid);
                     cJSON_AddNumberToObject(data_obj, "pressure_kpa", sd.pressure_kpa);
                     cJSON_AddBoolToObject(data_obj, "pressure_valid", sd.pressure_valid);
+                    cJSON_AddNumberToObject(data_obj, "neck_temp_c", sd.neck_temp_c);
+                    cJSON_AddBoolToObject(data_obj, "neck_temp_valid", sd.neck_temp_valid);
+                    cJSON_AddNumberToObject(data_obj, "radar_heart_bpm", sd.radar_heart_bpm);
+                    cJSON_AddNumberToObject(data_obj, "radar_breath_bpm", sd.radar_breath_bpm);
+                    cJSON_AddBoolToObject(data_obj, "radar_valid", sd.radar_valid);
                     cJSON *fsr_arr = cJSON_CreateArray();
                     for (int i = 0; i < 4; i++) {
                         cJSON *fsr = cJSON_CreateObject();
@@ -898,6 +903,14 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     ws_client_send_raw(json_str);
                     free(json_str);
                     cJSON_Delete(resp);
+                    if (sd.neck_temp_valid) {
+                        printf("[ntc] neck_temp=%.1fC\n", sd.neck_temp_c);
+                    } else {
+                        printf("[ntc] neck_temp=NA\n");
+                    }
+                    printf("[radar] heart=%u breath=%u valid=%d\n",
+                           sd.radar_heart_bpm, sd.radar_breath_bpm,
+                           sd.radar_valid ? 1 : 0);
                     printf("[传感器] 数据已回传: mq135=%.1fppm kPa=%.2f T=%.1fC H=%.1f%% lux=%.1f\n",
                            sd.mq135_ppm, sd.pressure_kpa, sd.temperature_c, sd.humidity_pct, sd.light_lux);
                 }

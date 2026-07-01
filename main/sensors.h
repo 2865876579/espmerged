@@ -31,6 +31,15 @@ typedef struct {
     float pressure_kpa;
     bool  pressure_valid;
 
+    /* NTC on pressure ADS1115 A1, neck temperature */
+    float neck_temp_c;
+    bool  neck_temp_valid;
+
+    /* R60ABD1-H mmWave radar, gated by FSR person detection */
+    uint8_t radar_heart_bpm;
+    uint8_t radar_breath_bpm;
+    bool    radar_valid;
+
     /* FSR402×4 压力 (牛顿) */
     float fsr_force_n[4];
     bool  fsr_valid[4];
