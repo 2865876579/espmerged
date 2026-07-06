@@ -54,6 +54,8 @@ static volatile bool s_wake_event = false;
 static volatile bool s_dialog_active = false;
 static QueueHandle_t s_opus_upload_queue = NULL;
 static TaskHandle_t s_opus_upload_task = NULL;
+static char s_ai_persona[12] = "PRO";
+static volatile float s_tjc_saved_pressure_kpa = -1.0f;
 
 // 借鉴 xiaozhi：保护 AFE capture 状态的 spinlock，防止 fetch 任务
 // 和主循环同时访问 capture buffer 造成 use-after-free
@@ -305,6 +307,68 @@ static bool start_opus_upload_task(void)
     return true;
 }
 
+static const char *normalize_ai_persona(const char *persona)
+{
+    if (!persona) {
+        return NULL;
+    }
+    if (strcmp(persona, "GENTLE") == 0 ||
+        strcmp(persona, "PRO") == 0 ||
+        strcmp(persona, "SHORT") == 0 ||
+        strcmp(persona, "SLEEP") == 0) {
+        return persona;
+    }
+    return NULL;
+}
+
+static const char *ai_persona_instruction(void)
+{
+    if (strcmp(s_ai_persona, "GENTLE") == 0) {
+        return "Use a gentle, warm, comforting sleep-companion tone.";
+    }
+    if (strcmp(s_ai_persona, "SHORT") == 0) {
+        return "Keep replies brief, direct, and easy to understand.";
+    }
+    if (strcmp(s_ai_persona, "SLEEP") == 0) {
+        return "Use a quiet sleep-guard tone, avoid disturbance, and help the user relax.";
+    }
+    return "Use a professional health-assistant tone and pay attention to sensor data.";
+}
+
+static bool send_text_with_persona(const char *text)
+{
+    if (!text || text[0] == '\0') {
+        return false;
+    }
+
+    char prompt[512];
+    int len = snprintf(prompt, sizeof(prompt),
+                       "[AI_PERSONA=%s] %s\n%s",
+                       s_ai_persona,
+                       ai_persona_instruction(),
+                       text);
+    if (len < 0 || len >= (int)sizeof(prompt)) {
+        return ws_client_send_text(text);
+    }
+    return ws_client_send_text(prompt);
+}
+
+static void notify_ai_persona_changed(void)
+{
+    ESP_LOGI(TAG, "AI persona=%s", s_ai_persona);
+    if (!ws_client_is_connected()) {
+        return;
+    }
+
+    char json[96];
+    int len = snprintf(json, sizeof(json),
+                       "{\"type\":\"ai_persona\",\"persona\":\"%s\"}",
+                       s_ai_persona);
+    if (len > 0 && len < (int)sizeof(json)) {
+        ws_client_send_raw(json);
+    }
+}
+
 static record_result_t record_and_send(void)
 {
     int total = SAMPLE_RATE * REC_MAX_DURATION_MS / 1000;
@@ -388,7 +452,7 @@ static void run_sleep_greeting(void)
 
     ws_client_clear_events();
     printf("\n[就寝] 检测到躺下 → 主动问候\n");
-    ws_client_send_text("用户刚刚躺下了，请温柔地主动问候一句");
+    send_text_with_persona("用户刚刚躺下了，请温柔地主动问候一句");
 
     turn_wait_result_t result = wait_for_turn_result(TURN_REPLY_TIMEOUT_MS);
     (void)result;
@@ -489,6 +553,141 @@ static void on_wake_word(void)
     }
 }
 
+static void handle_tjc_command(const char *cmd)
+{
+    if (!cmd || cmd[0] == '\0') {
+        return;
+    }
+
+    if (strcmp(cmd, "PILLOW_CAL_UP_START") == 0 ||
+        strcmp(cmd, "PILLOW_UP_START") == 0 ||
+        strcmp(cmd, "PUMP_UP") == 0) {
+        pump_clear_cooldown();
+        if (!pump_start()) {
+            ESP_LOGW(TAG, "TJC pump up start rejected");
+        }
+        return;
+    }
+
+    if (strcmp(cmd, "PILLOW_CAL_UP_STOP") == 0) {
+        pump_stop();
+        return;
+    }
+
+    if (strcmp(cmd, "PILLOW_STOP") == 0 ||
+        strcmp(cmd, "PUMP_STOP") == 0) {
+        pump_stop();
+        valve_close();
+        return;
+    }
+
+    if (strcmp(cmd, "PILLOW_CAL_DOWN_START") == 0 ||
+        strcmp(cmd, "PILLOW_DOWN_START") == 0 ||
+        strcmp(cmd, "PUMP_DOWN") == 0) {
+        valve_open();
+        return;
+    }
+
+    if (strcmp(cmd, "PILLOW_CAL_DOWN_STOP") == 0) {
+        valve_close();
+        return;
+    }
+
+    if (strcmp(cmd, "PILLOW_CAL_SAVE") == 0 ||
+        strcmp(cmd, "PUMP_COMFORT") == 0) {
+        pump_stop();
+        valve_close();
+        s_tjc_saved_pressure_kpa = sensor_read_pressure_kpa();
+        ESP_LOGI(TAG, "TJC pillow calibration saved: %.2f kPa",
+                 (double)s_tjc_saved_pressure_kpa);
+        if (s_tjc_saved_pressure_kpa >= 0.0f && ws_client_is_connected()) {
+            char json[160];
+            int len = snprintf(json, sizeof(json),
+                               "{\"type\":\"pillow_calibration_save\","
+                               "\"saved_kpa\":%.2f,\"source\":\"tjc\"}",
+                               (double)s_tjc_saved_pressure_kpa);
+            if (len > 0 && len < (int)sizeof(json)) {
+                ws_client_send_raw(json);
+            }
+        }
+        return;
+    }
+
+    if (strcmp(cmd, "PILLOW_HALT") == 0 ||
+        strcmp(cmd, "PUMP_RELEASE") == 0) {
+        pump_stop();
+        emergency_release();
+        return;
+    }
+
+    if (strcmp(cmd, "FAN_TOGGLE") == 0) {
+        esp_err_t err = sensor_ir_control_device("fan", "toggle");
+        ESP_LOGI(TAG, "TJC fan toggle ret=%s", esp_err_to_name(err));
+        return;
+    }
+
+    if (strcmp(cmd, "HUMI_TOGGLE") == 0) {
+        esp_err_t err = sensor_ir_control_device("humidifier", "toggle");
+        ESP_LOGI(TAG, "TJC humidifier toggle ret=%s", esp_err_to_name(err));
+        return;
+    }
+
+    if (strcmp(cmd, "LIGHT_TOGGLE") == 0) {
+        bool enabled = false;
+        uint8_t brightness = 0;
+        led_strip_get_state(&enabled, &brightness);
+        esp_err_t err = led_strip_apply(!enabled, !enabled ? 96 : 0);
+        ESP_LOGI(TAG, "TJC light toggle ret=%s", esp_err_to_name(err));
+        return;
+    }
+
+    if (strcmp(cmd, "VENTILATE") == 0) {
+        esp_err_t err = sensor_ir_control_device("fan", "on");
+        ESP_LOGI(TAG, "TJC ventilate ret=%s", esp_err_to_name(err));
+        return;
+    }
+
+    ESP_LOGW(TAG, "unknown TJC CMD: %s", cmd);
+}
+
+static void on_tjc_rx(const char *message, int page_id, void *user_ctx)
+{
+    (void)user_ctx;
+
+    if (page_id >= 0) {
+        ESP_LOGI(TAG, "TJC page sync: page%d", page_id);
+        return;
+    }
+
+    if (!message) {
+        return;
+    }
+
+    const char *cmd_prefix = "CMD:";
+    const char *persona_prefix = "SET:AI_PERSONA=";
+    size_t cmd_prefix_len = strlen(cmd_prefix);
+    size_t persona_prefix_len = strlen(persona_prefix);
+
+    if (strncmp(message, cmd_prefix, cmd_prefix_len) == 0) {
+        handle_tjc_command(message + cmd_prefix_len);
+        return;
+    }
+
+    if (strncmp(message, persona_prefix, persona_prefix_len) == 0) {
+        const char *persona = normalize_ai_persona(message + persona_prefix_len);
+        if (persona) {
+            snprintf(s_ai_persona, sizeof(s_ai_persona), "%s", persona);
+            notify_ai_persona_changed();
+        } else {
+            ESP_LOGW(TAG, "unknown TJC AI persona: %s",
+                     message + persona_prefix_len);
+        }
+        return;
+    }
+
+    ESP_LOGW(TAG, "unknown TJC message: %s", message);
+}
+
 void app_main(void)
 {
     printf("\n========== 智能枕头 v1.0 ==========\n\n");
@@ -515,6 +714,7 @@ void app_main(void)
 
     /* ── 传感器初始化（不依赖 WiFi）── */
     init_sensors();
+    usart_tjc_set_rx_callback(on_tjc_rx, NULL);
     xTaskCreate(sensor_task, "sensor", 4096, NULL, 1, NULL);
 
 #if ENABLE_UART_TEXT_INPUT
@@ -598,7 +798,7 @@ void app_main(void)
                 if (strncmp(cmd, "text:", 5) == 0) {
                     char *payload = cmd + 5;
                     while (*payload == ' ') payload++;
-                    if (*payload) ws_client_send_text(payload);
+                    if (*payload) send_text_with_persona(payload);
                 }
             }
         }

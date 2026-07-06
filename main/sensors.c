@@ -51,6 +51,7 @@ static const char *TAG = "sensors";
 #define RADAR_UART_BAUD         115200
 #define RADAR_UART_BUF_SIZE     512
 #define RADAR_STALE_MS          6000
+#define RADAR_ENABLE_INTERVAL_MS 3000
 #define RADAR_QUERY_INTERVAL_MS 3000
 #define RADAR_DEBUG_FRAME_LIMIT 12
 
@@ -172,6 +173,9 @@ static sensor_data_t s_latest;
 static portMUX_TYPE   s_data_spinlock = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t   s_sensor_task_handle = NULL;
 static SemaphoreHandle_t s_i2c0_mutex = NULL;  /* MCP5010DP I2C0 互斥 */
+static float s_last_fsr_force_n[FSR_SENSOR_COUNT];
+static bool  s_last_fsr_valid[FSR_SENSOR_COUNT];
+static bool  s_motion_baseline_ready;
 
 /* ── 人员就寝检测（FSR 力敏传感器）─────────────── */
 #define PERSON_FSR_THRESHOLD_N  1.0f
@@ -273,6 +277,7 @@ static void radar_enable_measurement(void)
 {
     uint8_t enable = 0x01;
     radar_send_cmd(0x81, 0x00, &enable, 1);  /* breath monitor on */
+    vTaskDelay(pdMS_TO_TICKS(20));
     radar_send_cmd(0x85, 0x00, &enable, 1);  /* heart monitor on */
 }
 
@@ -388,15 +393,21 @@ static void radar_uart_task(void *arg)
     TickType_t last_query = 0;
 
     while (1) {
-        if (s_radar_person_gate &&
-            (xTaskGetTickCount() - last_enable) >= pdMS_TO_TICKS(5000)) {
+        TickType_t now = xTaskGetTickCount();
+        /*
+         * Keep both respiration and heart monitors enabled. Some R60ABD1
+         * units power up with respiration reporting active while heart
+         * reporting stays silent until command 53 59 85 00 00 01 01 33 54 43
+         * is sent again, so do not depend only on the one-shot init command.
+         */
+        if ((now - last_enable) >= pdMS_TO_TICKS(RADAR_ENABLE_INTERVAL_MS)) {
             radar_enable_measurement();
-            last_enable = xTaskGetTickCount();
+            last_enable = now;
         }
         if (s_radar_person_gate &&
-            (xTaskGetTickCount() - last_query) >= pdMS_TO_TICKS(RADAR_QUERY_INTERVAL_MS)) {
+            (now - last_query) >= pdMS_TO_TICKS(RADAR_QUERY_INTERVAL_MS)) {
             radar_query_values();
-            last_query = xTaskGetTickCount();
+            last_query = now;
         }
         if (used >= sizeof(buf)) {
             used = 0;
@@ -559,12 +570,39 @@ static void read_fsr402_all(sensor_data_t *out)
         voltage = ads1115_raw_to_voltage(&s_fsr_ads, raw);
 
         fsr402_sample_t sample = fsr402_update(&s_fsr[i], voltage);
-        /* fsr402_update always returns a valid struct; check force > 0 as valid */
-        if (sample.force_n > 0.0f) {
-            out->fsr_force_n[i] = sample.force_n;
-            out->fsr_valid[i] = true;
-            ESP_LOGD(TAG, "FSR%d N=%.3f", i + 1, sample.force_n);
+        /* ADS read success means the channel is valid, even when force is 0N. */
+        float force_n = sample.force_n;
+        if (!isfinite(force_n) || force_n < 0.0f) {
+            force_n = 0.0f;
         }
+        out->fsr_force_n[i] = force_n;
+        out->fsr_valid[i] = true;
+        ESP_LOGD(TAG, "FSR%d N=%.3f", i + 1, force_n);
+    }
+}
+
+static void update_body_motion_from_fsr(sensor_data_t *out)
+{
+    if (!out) return;
+
+    bool any_valid = false;
+    float delta_sum = 0.0f;
+    for (int i = 0; i < FSR_SENSOR_COUNT; i++) {
+        if (!out->fsr_valid[i]) {
+            continue;
+        }
+        any_valid = true;
+        if (s_motion_baseline_ready && s_last_fsr_valid[i]) {
+            delta_sum += fabsf(out->fsr_force_n[i] - s_last_fsr_force_n[i]);
+        }
+        s_last_fsr_force_n[i] = out->fsr_force_n[i];
+        s_last_fsr_valid[i] = true;
+    }
+
+    out->body_motion_valid = any_valid;
+    out->body_motion_level = (any_valid && s_motion_baseline_ready) ? delta_sum : 0.0f;
+    if (any_valid) {
+        s_motion_baseline_ready = true;
     }
 }
 
@@ -699,6 +737,7 @@ void sensor_task(void *arg)
         read_mcp5010dp(&data);
         read_neck_ntc(&data);
         read_fsr402_all(&data);
+        update_body_motion_from_fsr(&data);
         read_environment(&data);
 
         bool person_now = false;
@@ -710,6 +749,52 @@ void sensor_task(void *arg)
         }
         radar_set_person_gate(person_now);
         radar_get_values(&data.radar_heart_bpm, &data.radar_breath_bpm, &data.radar_valid);
+
+        if (s_usart_ready) {
+            bool fsr_any_valid = false;
+            float fsr_max_n = 0.0f;
+            for (int i = 0; i < FSR_SENSOR_COUNT; i++) {
+                if (data.fsr_valid[i]) {
+                    fsr_any_valid = true;
+                    if (data.fsr_force_n[i] > fsr_max_n) {
+                        fsr_max_n = data.fsr_force_n[i];
+                    }
+                }
+            }
+
+            int tjc_page = usart_tjc_get_current_page();
+            esp_err_t tjc_err = ESP_OK;
+            if (tjc_page == 2) {
+                tjc_err = usart_tjc_update_curve_page(data.radar_heart_bpm,
+                                                      data.radar_breath_bpm,
+                                                      data.radar_valid,
+                                                      fsr_any_valid,
+                                                      fsr_max_n);
+            } else {
+                tjc_err = usart_tjc_update_sleep_home(
+                    data.temperature_c,
+                    data.env_valid,
+                    data.humidity_pct,
+                    data.env_valid,
+                    data.mq135_ppm,
+                    data.mq135_valid,
+                    data.light_lux,
+                    data.light_valid,
+                    data.pressure_kpa,
+                    data.pressure_valid,
+                    data.neck_temp_c,
+                    data.neck_temp_valid,
+                    data.radar_heart_bpm,
+                    data.radar_breath_bpm,
+                    data.radar_valid,
+                    fsr_any_valid,
+                    fsr_max_n);
+            }
+            if (tjc_err != ESP_OK) {
+                ESP_LOGD(TAG, "TJC update skipped/failed page=%d: %s",
+                         tjc_page, esp_err_to_name(tjc_err));
+            }
+        }
 
         /* 更新缓存（临界区） */
         portENTER_CRITICAL(&s_data_spinlock);

@@ -44,6 +44,10 @@ typedef struct {
     float fsr_force_n[4];
     bool  fsr_valid[4];
 
+    /* Body movement level derived from FSR force changes */
+    float body_motion_level;
+    bool  body_motion_valid;
+
     /* BH1750 光照 (lux) */
     float light_lux;
     bool  light_valid;

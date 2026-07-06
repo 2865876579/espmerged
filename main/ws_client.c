@@ -863,9 +863,21 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     cJSON_AddNumberToObject(data_obj, "radar_heart_bpm", sd.radar_heart_bpm);
                     cJSON_AddNumberToObject(data_obj, "radar_breath_bpm", sd.radar_breath_bpm);
                     cJSON_AddBoolToObject(data_obj, "radar_valid", sd.radar_valid);
+                    if (sd.radar_valid) {
+                        cJSON_AddNumberToObject(data_obj, "heart_rate", sd.radar_heart_bpm);
+                        cJSON_AddNumberToObject(data_obj, "heart_rate_bpm", sd.radar_heart_bpm);
+                        cJSON_AddNumberToObject(data_obj, "radar_hr_bpm", sd.radar_heart_bpm);
+                        cJSON_AddNumberToObject(data_obj, "breath_rate", sd.radar_breath_bpm);
+                        cJSON_AddNumberToObject(data_obj, "breath_rate_bpm", sd.radar_breath_bpm);
+                        cJSON_AddNumberToObject(data_obj, "radar_br_bpm", sd.radar_breath_bpm);
+                    }
+                    cJSON_AddNumberToObject(data_obj, "motion_level", sd.body_motion_level);
+                    cJSON_AddNumberToObject(data_obj, "body_motion", sd.body_motion_level);
+                    cJSON_AddBoolToObject(data_obj, "body_motion_valid", sd.body_motion_valid);
                     cJSON *fsr_arr = cJSON_CreateArray();
                     for (int i = 0; i < 4; i++) {
                         cJSON *fsr = cJSON_CreateObject();
+                        cJSON_AddNumberToObject(fsr, "id", i + 1);
                         cJSON_AddNumberToObject(fsr, "n", sd.fsr_force_n[i]);
                         cJSON_AddBoolToObject(fsr, "valid", sd.fsr_valid[i]);
                         cJSON_AddItemToArray(fsr_arr, fsr);
