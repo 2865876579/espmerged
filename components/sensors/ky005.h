@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include "driver/gpio.h"
 #include "esp_err.h"
 
@@ -14,6 +15,7 @@ typedef struct {
     uint32_t resolution_hz;            /* RMT 分辨率 (Hz)，默认 1 MHz */
     uint32_t carrier_hz;               /* 载波频率 (Hz)，默认 38 kHz */
     float carrier_duty_percent;        /* 载波占空比 (%)，默认 33% */
+    bool active_low;                   /* true: 输出反相，适合低电平驱动红外发射模块 */
 } ky005_config_t;
 
 /* KY-005 默认配置宏 */
@@ -23,6 +25,7 @@ typedef struct {
         .resolution_hz = 1000000,                  \
         .carrier_hz = 38000,                       \
         .carrier_duty_percent = 33.0f,             \
+        .active_low = false,                       \
     }
 
 /**

@@ -105,13 +105,13 @@ bool sensor_person_just_laid_down(void);
 
 /**
  * 红外接收预留接口。当前为了先稳定调通 KY-005 发射，主循环调用时不执行接收转发。
- * GPIO12 仍保留给 KY-022 红外接收。
+ * 当前硬件使用 GPIO12/P12 做 KY-005 红外发射；GPIO13 暂保留给 KY-022 红外接收。
  */
 void sensor_poll_ir(void);
 
 /**
- * Control IR devices learned from the standalone fan/humidifier projects.
- * device: "fan" or "humidifier"
+ * Control IR devices learned from the standalone fan/humidifier/air-conditioner projects.
+ * device: "fan", "humidifier", or "air_conditioner"
  * action: "on", "off", or "toggle"
  */
 esp_err_t sensor_ir_control_device(const char *device, const char *action);
@@ -121,6 +121,8 @@ esp_err_t sensor_ir_control_device(const char *device, const char *action);
  * out of sync if its original remote is used.
  */
 void sensor_ir_get_state(bool *fan_on, bool *humidifier_on);
+
+void sensor_ir_get_air_conditioner_state(bool *air_conditioner_on);
 
 #ifdef __cplusplus
 }

@@ -119,6 +119,7 @@ esp_err_t ky005_init(const ky005_config_t *config)
         .resolution_hz = s_resolution_hz,       /* 分辨率，影响 timing 精度 */
         .mem_block_symbols = 64,                /* 硬件内存块大小 (symbol 数量) */
         .trans_queue_depth = 4,                 /* 发送事务队列深度 */
+        .flags.invert_out = config->active_low,
     };
     ESP_RETURN_ON_ERROR(rmt_new_tx_channel(&tx_config, &s_tx_channel),
                         TAG, "创建 TX 通道失败");
@@ -145,14 +146,15 @@ esp_err_t ky005_init(const ky005_config_t *config)
     ESP_GOTO_ON_ERROR(rmt_enable(s_tx_channel),
                       err, TAG, "使能 TX 通道失败");
 
-    ESP_LOGI(TAG, "KY-005 已就绪，GPIO%d，载波 %lu Hz", config->gpio_num, carrier_hz);
+    ESP_LOGI(TAG, "KY-005 已就绪，GPIO%d，载波 %lu Hz，active_%s",
+             config->gpio_num, carrier_hz, config->active_low ? "low" : "high");
     return ESP_OK;
 
     /* ---------- 错误处理 ----------
      * 任何一步失败都要回滚已创建的资源，避免泄漏。 */
 err:
     ky005_deinit();
-    return ESP_FAIL;
+    return ret;
 }
 
 /* ======================== NEC 发送函数 ======================== */

@@ -41,8 +41,8 @@ static const char *TAG = "sensors";
 #define FSR_I2C_SCL_GPIO        GPIO_NUM_15   /* ← 原 GPIO11 */
 #define FSR_ADS_ADDR            ADS1115_DEFAULT_ADDR
 
-#define KY005_TX_GPIO           GPIO_NUM_13
-#define KY022_RX_GPIO           GPIO_NUM_12
+#define KY005_TX_GPIO           GPIO_NUM_12
+#define KY022_RX_GPIO           GPIO_NUM_13
 #define ENABLE_TJC_USART        1
 
 #define RADAR_UART_NUM          UART_NUM_2
@@ -124,6 +124,8 @@ static bool s_ir_fan_on;
 static bool s_ir_humidifier_on;
 static bool s_ir_fan_known;
 static bool s_ir_humidifier_known;
+static bool s_ir_air_conditioner_on;
+static bool s_ir_air_conditioner_known;
 static bool s_radar_ready;
 static volatile bool s_radar_person_gate;
 static uint8_t s_radar_heart_bpm;
@@ -167,6 +169,31 @@ static const uint32_t HUMIDIFIER_SIGNAL[] = {
 #define HUMIDIFIER_SIGNAL_PAIRS  (sizeof(HUMIDIFIER_SIGNAL) / sizeof(HUMIDIFIER_SIGNAL[0]) / 2)
 #define TX_BURST_COUNT           1        /* 每次发射帧数 */
 #define TX_BURST_GAP_MS          100      /* 帧间间隔 (ms) */
+
+/* 格力空调：KY-022 只用于解出 state[8]，发射时按格力标准时序重新生成，避免 raw 时序失真。 */
+#define GREE_STATE_LENGTH             8
+#define GREE_FULL_PAIRS               70
+#define GREE_HDR_MARK_US              9000
+#define GREE_HDR_SPACE_US             4500
+#define GREE_BIT_MARK_US              620
+#define GREE_ONE_SPACE_US             1600
+#define GREE_ZERO_SPACE_US            540
+#define GREE_MSG_SPACE_US             19980
+#define AC_ON_FRAME_GAP_MS            36
+#define AC_OFF_FRAME_GAP_MS           48
+
+static const uint8_t AC_ON_FRAME0[GREE_STATE_LENGTH] = {
+    0x79, 0x06, 0x30, 0x50, 0x01, 0x42, 0x00, 0xD0
+};
+static const uint8_t AC_ON_FRAME1[GREE_STATE_LENGTH] = {
+    0x79, 0x06, 0x30, 0x70, 0x00, 0x00, 0x30, 0xC0
+};
+static const uint8_t AC_OFF_FRAME0[GREE_STATE_LENGTH] = {
+    0x71, 0x06, 0x30, 0x50, 0x01, 0x42, 0x00, 0x50
+};
+static const uint8_t AC_OFF_FRAME1[GREE_STATE_LENGTH] = {
+    0x71, 0x06, 0x30, 0x70, 0x00, 0x00, 0x30, 0x40
+};
 
 /* 最新数据缓存 + 互斥锁 */
 static sensor_data_t s_latest;
@@ -704,10 +731,11 @@ void init_sensors(void)
 
     s_radar_ready = init_result("R60ABD1", init_r60abd1_radar());
 
-    /* KY-005 红外发射 (RMT TX, GPIO13) */
+    /* KY-005 红外发射 (RMT TX, GPIO12 / P12) */
     ky005_config_t ky005_cfg = KY005_DEFAULT_CONFIG(KY005_TX_GPIO);
-    ky005_cfg.carrier_hz = 40000;
+    ky005_cfg.carrier_hz = 38000;
     ky005_cfg.carrier_duty_percent = 50.0f;
+    ky005_cfg.active_low = true;
     s_ky005_ready = init_result("KY-005", ky005_init(&ky005_cfg));
     ESP_LOGI(TAG, "KY-022 RX reserved on GPIO%d", KY022_RX_GPIO);
 
@@ -896,6 +924,110 @@ static esp_err_t send_ir_frame(const char *name, const uint32_t *signal, size_t 
     return err;
 }
 
+static bool append_gree_pair(uint32_t *durations, size_t max_pairs, size_t *num_pairs,
+                             uint32_t mark_us, uint32_t space_us)
+{
+    if (!durations || !num_pairs || mark_us == 0 || *num_pairs >= max_pairs) {
+        return false;
+    }
+    durations[*num_pairs * 2] = mark_us;
+    durations[*num_pairs * 2 + 1] = space_us;
+    (*num_pairs)++;
+    return true;
+}
+
+static esp_err_t encode_gree_state_to_pairs(const uint8_t *state,
+                                            uint32_t *durations,
+                                            size_t *num_pairs)
+{
+    if (!state || !durations || !num_pairs) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *num_pairs = 0;
+    memset(durations, 0, GREE_FULL_PAIRS * 2 * sizeof(durations[0]));
+
+    ESP_RETURN_ON_FALSE(append_gree_pair(durations, GREE_FULL_PAIRS, num_pairs,
+                                         GREE_HDR_MARK_US, GREE_HDR_SPACE_US),
+                        ESP_ERR_NO_MEM, TAG, "append Gree header failed");
+
+    for (size_t byte = 0; byte < 4; byte++) {
+        for (uint8_t mask = 1; mask > 0; mask <<= 1) {
+            bool bit = (state[byte] & mask) != 0;
+            ESP_RETURN_ON_FALSE(append_gree_pair(durations, GREE_FULL_PAIRS, num_pairs,
+                                                 GREE_BIT_MARK_US,
+                                                 bit ? GREE_ONE_SPACE_US : GREE_ZERO_SPACE_US),
+                                ESP_ERR_NO_MEM, TAG, "append Gree block1 failed");
+        }
+    }
+
+    /* Gree connector/footer bits: 010 */
+    ESP_RETURN_ON_FALSE(append_gree_pair(durations, GREE_FULL_PAIRS, num_pairs,
+                                         GREE_BIT_MARK_US, GREE_ZERO_SPACE_US),
+                        ESP_ERR_NO_MEM, TAG, "append Gree footer0 failed");
+    ESP_RETURN_ON_FALSE(append_gree_pair(durations, GREE_FULL_PAIRS, num_pairs,
+                                         GREE_BIT_MARK_US, GREE_ONE_SPACE_US),
+                        ESP_ERR_NO_MEM, TAG, "append Gree footer1 failed");
+    ESP_RETURN_ON_FALSE(append_gree_pair(durations, GREE_FULL_PAIRS, num_pairs,
+                                         GREE_BIT_MARK_US, GREE_ZERO_SPACE_US),
+                        ESP_ERR_NO_MEM, TAG, "append Gree footer2 failed");
+
+    /* Internal block gap inside one Gree frame. */
+    ESP_RETURN_ON_FALSE(append_gree_pair(durations, GREE_FULL_PAIRS, num_pairs,
+                                         GREE_BIT_MARK_US, GREE_MSG_SPACE_US),
+                        ESP_ERR_NO_MEM, TAG, "append Gree internal gap failed");
+
+    for (size_t byte = 4; byte < GREE_STATE_LENGTH; byte++) {
+        for (uint8_t mask = 1; mask > 0; mask <<= 1) {
+            bool bit = (state[byte] & mask) != 0;
+            ESP_RETURN_ON_FALSE(append_gree_pair(durations, GREE_FULL_PAIRS, num_pairs,
+                                                 GREE_BIT_MARK_US,
+                                                 bit ? GREE_ONE_SPACE_US : GREE_ZERO_SPACE_US),
+                                ESP_ERR_NO_MEM, TAG, "append Gree block2 failed");
+        }
+    }
+
+    ESP_RETURN_ON_FALSE(append_gree_pair(durations, GREE_FULL_PAIRS, num_pairs,
+                                         GREE_BIT_MARK_US, 0),
+                        ESP_ERR_NO_MEM, TAG, "append Gree stop failed");
+
+    return *num_pairs == GREE_FULL_PAIRS ? ESP_OK : ESP_ERR_INVALID_SIZE;
+}
+
+static esp_err_t send_gree_state_frame(const uint8_t *state, const char *name)
+{
+    if (!s_ky005_ready) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    uint32_t durations[GREE_FULL_PAIRS * 2];
+    size_t pairs = 0;
+    ESP_RETURN_ON_ERROR(encode_gree_state_to_pairs(state, durations, &pairs),
+                        TAG, "encode Gree frame failed");
+    esp_err_t err = ky005_send_raw(durations, pairs);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "[%s] sent ideal Gree frame, pairs=%u", name, (unsigned)pairs);
+    } else {
+        ESP_LOGE(TAG, "[%s] Gree frame send failed: %s", name, esp_err_to_name(err));
+    }
+    return err;
+}
+
+static esp_err_t send_air_conditioner_command(bool power_on)
+{
+    const uint8_t *frame0 = power_on ? AC_ON_FRAME0 : AC_OFF_FRAME0;
+    const uint8_t *frame1 = power_on ? AC_ON_FRAME1 : AC_OFF_FRAME1;
+    uint32_t gap_ms = power_on ? AC_ON_FRAME_GAP_MS : AC_OFF_FRAME_GAP_MS;
+    const char *name = power_on ? "空调开机" : "空调关机";
+
+    ESP_RETURN_ON_ERROR(send_gree_state_frame(frame0, name), TAG, "send AC frame0 failed");
+    vTaskDelay(pdMS_TO_TICKS(gap_ms));
+    ESP_RETURN_ON_ERROR(send_gree_state_frame(frame1, name), TAG, "send AC frame1 failed");
+    ESP_LOGI(TAG, "IR %s command sent: frames=2 gap=%lums carrier=38000Hz active_low",
+             name, (unsigned long)gap_ms);
+    return ESP_OK;
+}
+
 static bool parse_ir_action(const char *action, bool current, bool *desired)
 {
     if (!action || !desired) {
@@ -980,6 +1112,22 @@ static esp_err_t control_humidifier_device(const char *action)
     return err;
 }
 
+static esp_err_t control_air_conditioner_device(const char *action)
+{
+    bool desired;
+    if (!parse_ir_action(action, s_ir_air_conditioner_on, &desired)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t err = send_air_conditioner_command(desired);
+    if (err == ESP_OK) {
+        s_ir_air_conditioner_on = desired;
+        s_ir_air_conditioner_known = true;
+        ESP_LOGI(TAG, "IR 空调 request -> %s", desired ? "on" : "off");
+    }
+    return err;
+}
+
 esp_err_t sensor_ir_control_device(const char *device, const char *action)
 {
     if (!device || !action) {
@@ -992,6 +1140,12 @@ esp_err_t sensor_ir_control_device(const char *device, const char *action)
     }
     if (strcmp(device, "humidifier") == 0 || strcmp(device, "humid") == 0) {
         return control_humidifier_device(action);
+    }
+    if (strcmp(device, "air_conditioner") == 0 ||
+        strcmp(device, "ac") == 0 ||
+        strcmp(device, "aircon") == 0 ||
+        strcmp(device, "kongtiao") == 0) {
+        return control_air_conditioner_device(action);
     }
     return ESP_ERR_NOT_SUPPORTED;
 }
@@ -1006,7 +1160,14 @@ void sensor_ir_get_state(bool *fan_on, bool *humidifier_on)
     }
 }
 
+void sensor_ir_get_air_conditioner_state(bool *air_conditioner_on)
+{
+    if (air_conditioner_on) {
+        *air_conditioner_on = s_ir_air_conditioner_on;
+    }
+}
+
 void sensor_poll_ir(void)
 {
-    /* TX 调通前不轮询 RX，避免接收转发干扰判断发射波形。GPIO12 仍保留给红外接收。 */
+    /* TX 调通前不轮询 RX，避免接收转发干扰判断发射波形。GPIO13 暂保留给红外接收。 */
 }

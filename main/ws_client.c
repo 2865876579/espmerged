@@ -786,25 +786,31 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     esp_err_t ir_ret = sensor_ir_control_device(device, action);
                     bool fan_on = false;
                     bool humidifier_on = false;
+                    bool air_conditioner_on = false;
                     sensor_ir_get_state(&fan_on, &humidifier_on);
+                    sensor_ir_get_air_conditioner_state(&air_conditioner_on);
 
-                    printf("[ir] cmd device=%s action=%s ret=%d fan=%d humidifier=%d\n",
+                    printf("[ir] cmd device=%s action=%s ret=%d fan=%d humidifier=%d ac=%d\n",
                            device ? device : "",
                            action ? action : "",
                            ir_ret,
                            fan_on ? 1 : 0,
-                           humidifier_on ? 1 : 0);
+                           humidifier_on ? 1 : 0,
+                           air_conditioner_on ? 1 : 0);
 
-                    char ir_state[256];
+                    char ir_state[320];
                     snprintf(ir_state, sizeof(ir_state),
-                             "{\"type\":\"ir_state\",\"ok\":%s,\"device\":\"%s\",\"action\":\"%s\","
-                             "\"fan_on\":%s,\"humidifier_on\":%s,\"ret\":%d}",
-                             ir_ret == ESP_OK ? "true" : "false",
-                             device ? device : "",
-                             action ? action : "",
-                             fan_on ? "true" : "false",
-                             humidifier_on ? "true" : "false",
-                             ir_ret);
+                              "{\"type\":\"ir_state\",\"ok\":%s,\"device\":\"%s\",\"action\":\"%s\","
+                              "\"fan_on\":%s,\"humidifier_on\":%s,"
+                              "\"air_conditioner_on\":%s,\"ac_on\":%s,\"ret\":%d}",
+                              ir_ret == ESP_OK ? "true" : "false",
+                              device ? device : "",
+                              action ? action : "",
+                              fan_on ? "true" : "false",
+                              humidifier_on ? "true" : "false",
+                              air_conditioner_on ? "true" : "false",
+                              air_conditioner_on ? "true" : "false",
+                              ir_ret);
                     ws_client_send_raw(ir_state);
                 }
                 else if (strcmp(type->valuestring, "pillow_cmd") == 0) {
@@ -897,9 +903,13 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                                             (led_brightness * 100 + 127) / 255);
                     bool fan_on = false;
                     bool humidifier_on = false;
+                    bool air_conditioner_on = false;
                     sensor_ir_get_state(&fan_on, &humidifier_on);
+                    sensor_ir_get_air_conditioner_state(&air_conditioner_on);
                     cJSON_AddBoolToObject(data_obj, "fan_on", fan_on);
                     cJSON_AddBoolToObject(data_obj, "humidifier_on", humidifier_on);
+                    cJSON_AddBoolToObject(data_obj, "air_conditioner_on", air_conditioner_on);
+                    cJSON_AddBoolToObject(data_obj, "ac_on", air_conditioner_on);
                     /* ★ 上次泵闭环结果 */
                     if (s_last_pump_done) {
                         cJSON *last = cJSON_CreateObject();
