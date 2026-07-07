@@ -11,6 +11,7 @@ idf_component_register(
         "sensors.c"
         "screen_anim.c"
         "lcd_ili9488.c"
+        "avatar_storage.c"
         "avatar_rgb666_frames.c"
         "font_gb2312_16.c"
     INCLUDE_DIRS "."
@@ -36,6 +37,8 @@ idf_component_register(
         nvs_flash
         driver
         esp_lcd
+        esp_partition
+        esp_http_client
         esp_adc
         esp_websocket_client
         cjson

@@ -15,6 +15,7 @@
 #include "pump_driver.h"
 #include "led_strip_driver.h"
 #include "screen_anim.h"
+#include "avatar_storage.h"
 #include "opus.h"
 #include "mbedtls/base64.h"
 #include "sensors.h"
@@ -33,6 +34,58 @@ static QueueHandle_t s_audio_queue = NULL;  // 音频数据队列（WebSocket �
 static volatile uint32_t s_tts_chunks_queued = 0;
 static volatile uint32_t s_tts_chunks_dropped = 0;
 static OpusDecoder *s_decoder = NULL;  // ★ 模块级，避免每次 TTS 懒初始化
+
+typedef struct {
+    char url[384];
+    size_t size;
+    uint32_t crc32;
+} avatar_download_args_t;
+
+static void avatar_download_task(void *arg)
+{
+    avatar_download_args_t *args = (avatar_download_args_t *)arg;
+    if (!args) {
+        vTaskDelete(NULL);
+        return;
+    }
+
+    screen_anim_set_subtitle("形象", "正在同步新形象");
+    esp_err_t ret = avatar_storage_download_rgb666(args->url, args->size, args->crc32);
+    char msg[192];
+    snprintf(msg, sizeof(msg),
+             "{\"type\":\"avatar_state\",\"ok\":%s,\"ret\":%d}",
+             ret == ESP_OK ? "true" : "false", ret);
+    ws_client_send_raw(msg);
+    screen_anim_set_subtitle("形象", ret == ESP_OK ? "新形象已同步" : "形象同步失败");
+    free(args);
+    vTaskDelete(NULL);
+}
+
+static void start_avatar_download(const char *url, size_t size, uint32_t crc32)
+{
+    if (!url || !*url || size == 0) {
+        ws_client_send_raw("{\"type\":\"avatar_state\",\"ok\":false,\"ret\":-1}");
+        return;
+    }
+    avatar_download_args_t *args = calloc(1, sizeof(*args));
+    if (!args) {
+        ws_client_send_raw("{\"type\":\"avatar_state\",\"ok\":false,\"ret\":-2}");
+        return;
+    }
+    snprintf(args->url, sizeof(args->url), "%s", url);
+    args->size = size;
+    args->crc32 = crc32;
+    if (xTaskCreatePinnedToCore(avatar_download_task,
+                                "avatar_download",
+                                6144,
+                                args,
+                                3,
+                                NULL,
+                                0) != pdPASS) {
+        free(args);
+        ws_client_send_raw("{\"type\":\"avatar_state\",\"ok\":false,\"ret\":-3}");
+    }
+}
 
 // ── 气泵命令（独立 FreeRTOS 任务，不阻塞 audio/websocket）──
 typedef enum { PUMP_NONE, PUMP_TILT, PUMP_RECOVER, PUMP_STOP, PUMP_HALT,
@@ -643,6 +696,20 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                         printf("[你] %s\n", text->valuestring);
                         screen_anim_set_subtitle("你", text->valuestring);
                     }
+                }
+                else if (strcmp(type->valuestring, "avatar_update") == 0) {
+                    const char *url = cJSON_GetStringValue(cJSON_GetObjectItem(json, "rgb666_url"));
+                    cJSON *size_item = cJSON_GetObjectItem(json, "bin_size");
+                    const char *crc_text = cJSON_GetStringValue(cJSON_GetObjectItem(json, "crc32"));
+                    size_t size = cJSON_IsNumber(size_item)
+                                      ? (size_t)cJSON_GetNumberValue(size_item)
+                                      : AVATAR_STORAGE_RGB666_SIZE;
+                    uint32_t crc32 = avatar_storage_parse_crc32_text(crc_text);
+                    printf("[avatar] update url=%s size=%u crc=%08lx\n",
+                           url ? url : "",
+                           (unsigned)size,
+                           (unsigned long)crc32);
+                    start_avatar_download(url, size, crc32);
                 }
                 else if (strcmp(type->valuestring, "led_cmd") == 0) {
                     const char *action = cJSON_GetStringValue(cJSON_GetObjectItem(json, "action"));

@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "avatar_rgb666_frames.h"
+#include "avatar_storage.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -45,10 +46,15 @@ static const char *TAG = "screen_anim";
 static TaskHandle_t s_animation_task_handle;
 
 static const uint16_t s_frame_durations_ms[AVATAR_HEAD_FRAME_COUNT] = {
-    420, 170, 170, 180, 180, 180, 120, 130, 170, 180, 180, 420,
+    300, 80, 80, 80, 100, 90, 70, 80, 90, 120, 170, 420,
 };
 
 static uint8_t *s_tx_buf;
+
+static inline const uint8_t *avatar_base_pixels(void)
+{
+    return avatar_storage_get_base(avatar_base_rgb666);
+}
 
 static portMUX_TYPE s_subtitle_lock = portMUX_INITIALIZER_UNLOCKED;
 static char s_subtitle_speaker[SUBTITLE_SPEAKER_BYTES] = "小安";
@@ -282,6 +288,49 @@ static esp_err_t draw_rgb666_rect(int x, int y, int w, int h,
     return ESP_OK;
 }
 
+
+typedef struct {
+    int x;
+    int y;
+    int w;
+    int h;
+} avatar_dirty_rect_t;
+
+static const avatar_dirty_rect_t s_avatar_dirty_rects[] = {
+    // top hair + bangs
+    {.x = 90, .y = 38, .w = 130, .h = 74},
+    // left loose hair
+    {.x = 48, .y = 76, .w = 116, .h = 132},
+    // right wind-blown hair
+    {.x = 166, .y = 62, .w = 114, .h = 174},
+    // clean blink patch
+    {.x = 124, .y = 60, .w = 76, .h = 42},
+};
+
+static esp_err_t draw_avatar_frame_regions(uint32_t frame)
+{
+    if (frame >= AVATAR_HEAD_FRAME_COUNT) {
+        frame = 0;
+    }
+    const uint8_t *frame_pixels = avatar_head_rgb666_frames[frame];
+    for (size_t i = 0; i < sizeof(s_avatar_dirty_rects) / sizeof(s_avatar_dirty_rects[0]); i++) {
+        const avatar_dirty_rect_t *r = &s_avatar_dirty_rects[i];
+        int sx = r->x - AVATAR_HEAD_X;
+        int sy = r->y - AVATAR_HEAD_Y;
+        if (sx < 0 || sy < 0 || sx + r->w > AVATAR_HEAD_W || sy + r->h > AVATAR_HEAD_H) {
+            ESP_LOGW(TAG, "avatar dirty rect %u out of range", (unsigned)i);
+            continue;
+        }
+        const uint8_t *src = frame_pixels + (((size_t)sy * AVATAR_HEAD_W + sx) * 3);
+        esp_err_t err = draw_rgb666_rect(r->x, r->y, r->w, r->h,
+                                         src, AVATAR_HEAD_W, UINT32_MAX);
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    return ESP_OK;
+}
+
 #if ENABLE_AI_STATUS_PANEL
 static uint8_t status_clamp_rgb666(int value)
 {
@@ -512,7 +561,7 @@ static esp_err_t draw_status_panel(uint32_t tick)
 
         uint8_t *dst = s_tx_buf;
         for (int line = 0; line < lines; line++) {
-            const uint8_t *src = avatar_base_rgb666 +
+            const uint8_t *src = avatar_base_pixels() +
                                  (((size_t)(STATUS_PANEL_Y + row + line) *
                                    LCD_ILI9488_H_RES + STATUS_PANEL_X) *
                                   3);
@@ -549,7 +598,7 @@ static void copy_base_tile(int x, int y, int w, int h)
 {
     uint8_t *dst = s_tx_buf;
     for (int row = 0; row < h; row++) {
-        const uint8_t *src = avatar_base_rgb666 + (((size_t)(y + row) * LCD_ILI9488_H_RES + x) * 3);
+        const uint8_t *src = avatar_base_pixels() + (((size_t)(y + row) * LCD_ILI9488_H_RES + x) * 3);
         memcpy(dst, src, (size_t)w * 3);
         dst += (size_t)w * 3;
     }
@@ -668,6 +717,8 @@ static void animation_task(void *arg)
 {
     (void)arg;
 
+    ESP_ERROR_CHECK_WITHOUT_ABORT(avatar_storage_init());
+
     s_tx_buf = heap_caps_malloc(LCD_ILI9488_H_RES * DIRECT_DRAW_LINES * 3,
                                 MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     if (!s_tx_buf) {
@@ -679,7 +730,7 @@ static void animation_task(void *arg)
     ESP_ERROR_CHECK_WITHOUT_ABORT(draw_rgb666_rect(0, 0,
                                                   LCD_ILI9488_H_RES,
                                                   LCD_ILI9488_V_RES,
-                                                  avatar_base_rgb666,
+                                                  avatar_base_pixels(),
                                                   LCD_ILI9488_H_RES,
                                                   UINT32_MAX));
 #if ENABLE_AMBIENT_FX
@@ -688,6 +739,7 @@ static void animation_task(void *arg)
 
     size_t frame = 0;
     uint32_t animation_tick = 0;
+    uint32_t drawn_avatar_version = avatar_storage_get_version();
 #if ENABLE_AMBIENT_FX
     size_t ambient_cursor = 0;
 #endif
@@ -697,6 +749,21 @@ static void animation_task(void *arg)
 #endif
     while (1) {
         TickType_t start = xTaskGetTickCount();
+
+        uint32_t current_avatar_version = avatar_storage_get_version();
+        if (current_avatar_version != drawn_avatar_version) {
+            ESP_ERROR_CHECK_WITHOUT_ABORT(draw_rgb666_rect(0, 0,
+                                                          LCD_ILI9488_H_RES,
+                                                          LCD_ILI9488_V_RES,
+                                                          avatar_base_pixels(),
+                                                          LCD_ILI9488_H_RES,
+                                                          UINT32_MAX));
+#if ENABLE_AI_STATUS_PANEL
+            ESP_ERROR_CHECK_WITHOUT_ABORT(draw_status_panel(animation_tick));
+            drawn_subtitle_version = s_subtitle_version;
+#endif
+            drawn_avatar_version = current_avatar_version;
+        }
 
 #if ENABLE_AMBIENT_FX
         size_t ambient_indices[AMBIENT_FX_PER_STEP];
@@ -710,18 +777,17 @@ static void animation_task(void *arg)
         }
 #endif
 
-        esp_err_t err = draw_rgb666_rect(AVATAR_HEAD_X, AVATAR_HEAD_Y,
-                                         AVATAR_HEAD_W, AVATAR_HEAD_H,
-                                         avatar_head_rgb666_frames[frame],
-                                         AVATAR_HEAD_W,
-                                         UINT32_MAX);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "draw frame %u failed: %s", (unsigned)frame, esp_err_to_name(err));
+        esp_err_t err = ESP_OK;
+        if (!avatar_storage_custom_active()) {
+            err = draw_avatar_frame_regions(frame);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "draw frame %u failed: %s", (unsigned)frame, esp_err_to_name(err));
+            }
         }
 
 #if ENABLE_LOWER_PARTICLES
         if ((animation_tick % LOWER_PARTICLE_REFRESH_DIV) == 0) {
-            const uint8_t *lower_pixels = avatar_base_rgb666 +
+            const uint8_t *lower_pixels = avatar_base_pixels() +
                                           (((size_t)LOWER_PARTICLE_Y * LCD_ILI9488_H_RES +
                                             LOWER_PARTICLE_X) *
                                            3);
