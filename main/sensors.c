@@ -1,8 +1,8 @@
-/*
- * sensors.c — 传感器统一封装实现
+﻿/*
+ * sensors.c 鈥?浼犳劅鍣ㄧ粺涓€灏佽瀹炵幇
  *
- * 全部传感器初始化和轮询逻辑，从 wanzheng-usart 迁移而来。
- * 唯一改动：I2C1 从 GPIO10/11 移到 GPIO14/15（避免与 INMP441 I2S 冲突）。
+ * 鍏ㄩ儴浼犳劅鍣ㄥ垵濮嬪寲鍜岃疆璇㈤€昏緫锛屼粠 wanzheng-usart 杩佺Щ鑰屾潵銆?
+ * 鍞竴鏀瑰姩锛欼2C1 浠?GPIO10/11 绉诲埌 GPIO14/15锛堥伩鍏嶄笌 INMP441 I2S 鍐茬獊锛夈€?
  */
 
 #include "sensors.h"
@@ -28,17 +28,17 @@
 
 static const char *TAG = "sensors";
 
-/* ═══════════════════════════════════════════════════════════
- *  引脚定义（I2C1 已改为 GPIO14/15，避免与麦克风 I2S 冲突）
- * ═══════════════════════════════════════════════════════════ */
+/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+ *  寮曡剼瀹氫箟锛圛2C1 宸叉敼涓?GPIO14/15锛岄伩鍏嶄笌楹﹀厠椋?I2S 鍐茬獊锛?
+ * 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?*/
 #define MCP_ADS_I2C_PORT        I2C_NUM_0
 #define MCP_ADS_SDA_GPIO        GPIO_NUM_8
 #define MCP_ADS_SCL_GPIO        GPIO_NUM_9
 #define MCP_ADS_ADDR            ADS1115_DEFAULT_ADDR
 
 #define FSR_ADS_I2C_PORT        I2C_NUM_1
-#define FSR_I2C_SDA_GPIO        GPIO_NUM_14   /* ← 原 GPIO10 */
-#define FSR_I2C_SCL_GPIO        GPIO_NUM_15   /* ← 原 GPIO11 */
+#define FSR_I2C_SDA_GPIO        GPIO_NUM_14   /* 鈫?鍘?GPIO10 */
+#define FSR_I2C_SCL_GPIO        GPIO_NUM_15   /* 鈫?鍘?GPIO11 */
 #define FSR_ADS_ADDR            ADS1115_DEFAULT_ADDR
 
 #define KY005_TX_GPIO           GPIO_NUM_12
@@ -62,7 +62,7 @@ static const char *TAG = "sensors";
 #define I2C_CLK_HZ              100000
 #define FSR_SENSOR_COUNT        4
 
-/* MCP5010DP 分压 & 量程 */
+/* MCP5010DP 鍒嗗帇 & 閲忕▼ */
 #define MCP_DIVIDER_TOP_OHM     4700.0f
 #define MCP_DIVIDER_BOTTOM_OHM  10000.0f
 #define MCP_SUPPLY_V            5.0f
@@ -78,9 +78,9 @@ static const char *TAG = "sensors";
 #define NECK_NTC_BETA           3950.0f
 #define NECK_NTC_T0_K           298.15f
 
-/* ═══════════════════════════════════════════════════════════
- *  静态变量
- * ═══════════════════════════════════════════════════════════ */
+/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+ *  闈欐€佸彉閲?
+ * 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?*/
 static const ads1115_t s_mcp_ads = {
     .i2c_port    = MCP_ADS_I2C_PORT,
     .sda_io      = MCP_ADS_SDA_GPIO,
@@ -112,7 +112,7 @@ static fsr402_t  s_fsr[FSR_SENSOR_COUNT];
 static bh1750_t  s_bh1750;
 static sht31_t   s_sht31;
 
-/* 就绪标志 */
+/* 灏辩华鏍囧織 */
 static bool s_mcp_ads_ready;
 static bool s_fsr_ads_ready;
 static bool s_bh1750_ready;
@@ -135,8 +135,8 @@ static uint8_t s_radar_debug_frames;
 static portMUX_TYPE s_radar_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
 /**
- * 风扇电机开关（Fan）— NEC 协议（34 对 / 67 脉冲）
- *   地址: 0x00, 命令: 0x43
+ * 椋庢墖鐢垫満寮€鍏筹紙Fan锛夆€?NEC 鍗忚锛?4 瀵?/ 67 鑴夊啿锛?
+ *   鍦板潃: 0x00, 鍛戒护: 0x43
  */
 static const uint32_t s_signal_fan[] = {
      9073,  4486,       607,   528,       608,   525,       609,   524,
@@ -152,8 +152,8 @@ static const uint32_t s_signal_fan[] = {
 #define FAN_PAIRS  (sizeof(s_signal_fan) / sizeof(s_signal_fan[0]) / 2)
 
 /**
- * 从遥控器捕获的加湿器控制信号（完整 NEC 帧，34 对脉冲）
- * Address=0x00, Command=0x00 — toggle 型
+ * 浠庨仴鎺у櫒鎹曡幏鐨勫姞婀垮櫒鎺у埗淇″彿锛堝畬鏁?NEC 甯э紝34 瀵硅剦鍐诧級
+ * Address=0x00, Command=0x00 鈥?toggle 鍨?
  */
 static const uint32_t HUMIDIFIER_SIGNAL[] = {
      9076,  4491,       549,   584,       573,   559,       576,   557,
@@ -167,10 +167,10 @@ static const uint32_t HUMIDIFIER_SIGNAL[] = {
       570,  1663,       569,     0
 };
 #define HUMIDIFIER_SIGNAL_PAIRS  (sizeof(HUMIDIFIER_SIGNAL) / sizeof(HUMIDIFIER_SIGNAL[0]) / 2)
-#define TX_BURST_COUNT           1        /* 每次发射帧数 */
-#define TX_BURST_GAP_MS          100      /* 帧间间隔 (ms) */
+#define TX_BURST_COUNT           1        /* 姣忔鍙戝皠甯ф暟 */
+#define TX_BURST_GAP_MS          100      /* 甯ч棿闂撮殧 (ms) */
 
-/* 格力空调：KY-022 只用于解出 state[8]，发射时按格力标准时序重新生成，避免 raw 时序失真。 */
+/* 鏍煎姏绌鸿皟锛欿Y-022 鍙敤浜庤В鍑?state[8]锛屽彂灏勬椂鎸夋牸鍔涙爣鍑嗘椂搴忛噸鏂扮敓鎴愶紝閬垮厤 raw 鏃跺簭澶辩湡銆?*/
 #define GREE_STATE_LENGTH             8
 #define GREE_FULL_PAIRS               70
 #define GREE_HDR_MARK_US              9000
@@ -195,25 +195,25 @@ static const uint8_t AC_OFF_FRAME1[GREE_STATE_LENGTH] = {
     0x71, 0x06, 0x30, 0x70, 0x00, 0x00, 0x30, 0x40
 };
 
-/* 最新数据缓存 + 互斥锁 */
+/* 鏈€鏂版暟鎹紦瀛?+ 浜掓枼閿?*/
 static sensor_data_t s_latest;
 static portMUX_TYPE   s_data_spinlock = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t   s_sensor_task_handle = NULL;
-static SemaphoreHandle_t s_i2c0_mutex = NULL;  /* MCP5010DP I2C0 互斥 */
+static SemaphoreHandle_t s_i2c0_mutex = NULL;  /* MCP5010DP I2C0 浜掓枼 */
 static float s_last_fsr_force_n[FSR_SENSOR_COUNT];
 static bool  s_last_fsr_valid[FSR_SENSOR_COUNT];
 static bool  s_motion_baseline_ready;
 
-/* ── 人员就寝检测（FSR 力敏传感器）─────────────── */
-#define PERSON_FSR_THRESHOLD_N  1.0f
-#define PERSON_DEBOUNCE_COUNT    2       // 连续2秒确认
+/* 鈹€鈹€ 浜哄憳灏卞瘽妫€娴嬶紙FSR 鍔涙晱浼犳劅鍣級鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+#define PERSON_FSR_THRESHOLD_N  0.05f
+#define PERSON_DEBOUNCE_COUNT    2       // 杩炵画2绉掔‘璁?
 static volatile bool s_person_on_bed  = false;
 static volatile bool s_person_event   = false;
 static          int  s_person_debounce = 0;
 
-/* ═══════════════════════════════════════════════════════════
- *  辅助函数
- * ═══════════════════════════════════════════════════════════ */
+/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+ *  杈呭姪鍑芥暟
+ * 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?*/
 
 static bool init_result(const char *name, esp_err_t err)
 {
@@ -522,7 +522,7 @@ static void init_fsr_models(void)
 static void calibrate_fsr_zero(void)
 {
     if (!s_fsr_ads_ready) return;
-    ESP_LOGI(TAG, "FSR zero calibration — keep sensors unloaded for 300ms...");
+    ESP_LOGI(TAG, "FSR zero calibration 鈥?keep sensors unloaded for 300ms...");
     vTaskDelay(pdMS_TO_TICKS(300));
     for (int i = 0; i < FSR_SENSOR_COUNT; i++) {
         int16_t raw;
@@ -534,9 +534,9 @@ static void calibrate_fsr_zero(void)
     }
 }
 
-/* ═══════════════════════════════════════════════════════════
- *  传感器读取
- * ═══════════════════════════════════════════════════════════ */
+/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+ *  浼犳劅鍣ㄨ鍙?
+ * 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?*/
 
 static void read_mcp5010dp(sensor_data_t *out)
 {
@@ -639,7 +639,7 @@ static void read_environment(sensor_data_t *out)
     out->env_valid     = false;
     out->mq135_valid   = false;
 
-    /* BH1750 光照 */
+    /* BH1750 鍏夌収 */
     if (s_bh1750_ready) {
         float lux;
         if (bh1750_read_lux(&s_bh1750, &lux) == ESP_OK) {
@@ -650,7 +650,7 @@ static void read_environment(sensor_data_t *out)
         }
     }
 
-    /* SHT31 温湿度 */
+    /* SHT31 娓╂箍搴?*/
     if (s_sht31_ready) {
         float t, h;
         if (sht31_read_temp_humi(&s_sht31, &t, &h) == ESP_OK) {
@@ -665,7 +665,7 @@ static void read_environment(sensor_data_t *out)
         }
     }
 
-    /* MQ-135 空气质量 */
+    /* MQ-135 绌烘皵璐ㄩ噺 */
     if (s_mq135_ready) {
         mq135_data_t mq;
         if (mq135_read(&mq) == ESP_OK && mq.ppm_valid) {
@@ -679,27 +679,27 @@ static void read_environment(sensor_data_t *out)
     }
 }
 
-/* ═══════════════════════════════════════════════════════════
- *  公开 API
- * ═══════════════════════════════════════════════════════════ */
+/* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+ *  鍏紑 API
+ * 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?*/
 
 void init_sensors(void)
 {
     ESP_LOGI(TAG, "========== Sensor Init Start ==========");
 
-    /* I2C0 互斥锁：防 pump_task / sensor_task / LLM read_sensors 抢 ADS1115 */
+    /* I2C0 浜掓枼閿侊細闃?pump_task / sensor_task / LLM read_sensors 鎶?ADS1115 */
     s_i2c0_mutex = xSemaphoreCreateMutex();
 
-    /* FSR 软件模型 */
+    /* FSR 杞欢妯″瀷 */
     init_fsr_models();
 
-    /* ADS1115 #1 — MCP5010DP 气压 (I2C0: GPIO8/9) */
+    /* ADS1115 #1 鈥?MCP5010DP 姘斿帇 (I2C0: GPIO8/9) */
     s_mcp_ads_ready = init_result("ADS1115-MCP", ads1115_init(&s_mcp_ads));
 
-    /* ADS1115 #2 — FSR402×4 (I2C1: GPIO14/15) */
+    /* ADS1115 #2 鈥?FSR402脳4 (I2C1: GPIO14/15) */
     s_fsr_ads_ready = init_result("ADS1115-FSR", ads1115_init(&s_fsr_ads));
 
-    /* BH1750 光照 (I2C1 共用 GPIO14/15, addr 0x23) */
+    /* BH1750 鍏夌収 (I2C1 鍏辩敤 GPIO14/15, addr 0x23) */
     esp_err_t bh1750_err = bh1750_init(&s_bh1750, FSR_ADS_I2C_PORT,
                                        FSR_I2C_SDA_GPIO, FSR_I2C_SCL_GPIO,
                                        I2C_CLK_HZ, BH1750_DEFAULT_ADDR);
@@ -712,11 +712,11 @@ void init_sensors(void)
     }
     s_bh1750_ready = init_result("BH1750", bh1750_err);
 
-    /* SHT31 温湿度 (I2C1 共用 GPIO14/15, addr 0x44) */
+    /* SHT31 娓╂箍搴?(I2C1 鍏辩敤 GPIO14/15, addr 0x44) */
     s_sht31_ready = init_result("SHT31",
         sht31_init(&s_sht31, FSR_ADS_I2C_PORT, SHT31_I2C_ADDR_DEFAULT));
 
-    /* MQ-135 空气质量 (ADC1_CH0 = GPIO1) */
+    /* MQ-135 绌烘皵璐ㄩ噺 (ADC1_CH0 = GPIO1) */
     const mq135_config_t mq135_config = {
         .unit               = MQ135_ADC_UNIT,
         .channel            = MQ135_ADC_CHANNEL,
@@ -731,7 +731,7 @@ void init_sensors(void)
 
     s_radar_ready = init_result("R60ABD1", init_r60abd1_radar());
 
-    /* KY-005 红外发射 (RMT TX, GPIO12 / P12) */
+    /* KY-005 绾㈠鍙戝皠 (RMT TX, GPIO12 / P12) */
     ky005_config_t ky005_cfg = KY005_DEFAULT_CONFIG(KY005_TX_GPIO);
     ky005_cfg.carrier_hz = 38000;
     ky005_cfg.carrier_duty_percent = 50.0f;
@@ -739,7 +739,7 @@ void init_sensors(void)
     s_ky005_ready = init_result("KY-005", ky005_init(&ky005_cfg));
     ESP_LOGI(TAG, "KY-022 RX reserved on GPIO%d", KY022_RX_GPIO);
 
-    /* 淘晶驰串口屏 (UART1, GPIO17/18, 115200) */
+    /* 娣樻櫠椹颁覆鍙ｅ睆 (UART1, GPIO17/18, 115200) */
 #if ENABLE_TJC_USART
     s_usart_ready = init_result("TJC-USART", usart_init());
 #else
@@ -747,7 +747,7 @@ void init_sensors(void)
     ESP_LOGI(TAG, "TJC-USART skipped");
 #endif
 
-    /* FSR 零点校准 */
+    /* FSR 闆剁偣鏍″噯 */
     calibrate_fsr_zero();
 
     ESP_LOGI(TAG, "========== Sensor Init Done ==========");
@@ -770,7 +770,7 @@ void sensor_task(void *arg)
 
         bool person_now = false;
         for (int i = 0; i < FSR_SENSOR_COUNT; i++) {
-            if (data.fsr_valid[i] && data.fsr_force_n[i] > PERSON_FSR_THRESHOLD_N) {
+            if (data.fsr_valid[i] && data.fsr_force_n[i] >= PERSON_FSR_THRESHOLD_N) {
                 person_now = true;
                 break;
             }
@@ -824,7 +824,7 @@ void sensor_task(void *arg)
             }
         }
 
-        /* 更新缓存（临界区） */
+        /* 鏇存柊缂撳瓨锛堜复鐣屽尯锛?*/
         portENTER_CRITICAL(&s_data_spinlock);
         memcpy(&s_latest, &data, sizeof(s_latest));
         portEXIT_CRITICAL(&s_data_spinlock);
@@ -856,19 +856,19 @@ void sensor_task(void *arg)
             );
         }
 
-        /* ── 人员就寝检测（FSR 力敏传感器）─────── */
+        /* 鈹€鈹€ 浜哄憳灏卞瘽妫€娴嬶紙FSR 鍔涙晱浼犳劅鍣級鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
         if (person_now) {
             if (++s_person_debounce >= PERSON_DEBOUNCE_COUNT && !s_person_on_bed) {
                 s_person_event = true;
                 s_person_on_bed = true;
-                ESP_LOGI(TAG, "person detected (FSR > %.0fN)", PERSON_FSR_THRESHOLD_N);
+                ESP_LOGI(TAG, "person detected (FSR >= %.2fN)", PERSON_FSR_THRESHOLD_N);
             }
         } else {
             s_person_debounce = 0;
             s_person_on_bed = false;
         }
 
-        /* 休眠 1s，可被 sensor_request_refresh 唤醒 */
+        /* 浼戠湢 1s锛屽彲琚?sensor_request_refresh 鍞ら啋 */
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
     }
 }
@@ -877,7 +877,7 @@ void sensor_request_refresh(void)
 {
     if (!s_sensor_task_handle) return;
     xTaskNotifyGive(s_sensor_task_handle);
-    vTaskDelay(pdMS_TO_TICKS(150));  /* 等待读取完成 */
+    vTaskDelay(pdMS_TO_TICKS(150));  /* 绛夊緟璇诲彇瀹屾垚 */
 }
 
 float sensor_read_pressure_kpa(void)
@@ -910,6 +910,11 @@ bool sensor_person_just_laid_down(void)
     return val;
 }
 
+bool sensor_person_on_bed(void)
+{
+    return s_person_on_bed;
+}
+
 static esp_err_t send_ir_frame(const char *name, const uint32_t *signal, size_t pairs)
 {
     if (!s_ky005_ready) {
@@ -917,9 +922,9 @@ static esp_err_t send_ir_frame(const char *name, const uint32_t *signal, size_t 
     }
     esp_err_t err = ky005_send_raw(signal, pairs);
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "[%s] 发送 OK", name);
+        ESP_LOGI(TAG, "[%s] 鍙戦€?OK", name);
     } else {
-        ESP_LOGE(TAG, "[%s] 发送失败 %s", name, esp_err_to_name(err));
+        ESP_LOGE(TAG, "[%s] 鍙戦€佸け璐?%s", name, esp_err_to_name(err));
     }
     return err;
 }
@@ -1018,7 +1023,7 @@ static esp_err_t send_air_conditioner_command(bool power_on)
     const uint8_t *frame0 = power_on ? AC_ON_FRAME0 : AC_OFF_FRAME0;
     const uint8_t *frame1 = power_on ? AC_ON_FRAME1 : AC_OFF_FRAME1;
     uint32_t gap_ms = power_on ? AC_ON_FRAME_GAP_MS : AC_OFF_FRAME_GAP_MS;
-    const char *name = power_on ? "空调开机" : "空调关机";
+    const char *name = power_on ? "AC_ON" : "AC_OFF";
 
     ESP_RETURN_ON_ERROR(send_gree_state_frame(frame0, name), TAG, "send AC frame0 failed");
     vTaskDelay(pdMS_TO_TICKS(gap_ms));
@@ -1068,7 +1073,7 @@ static esp_err_t send_humidifier_signal(void)
             vTaskDelay(pdMS_TO_TICKS(TX_BURST_GAP_MS));
         }
     }
-    ESP_LOGI(TAG, "[加湿器] TX: sent %d/%d frame(s)", ok, TX_BURST_COUNT);
+    ESP_LOGI(TAG, "[鍔犳箍鍣╙ TX: sent %d/%d frame(s)", ok, TX_BURST_COUNT);
     return ok > 0 ? ESP_OK : last_err;
 }
 
@@ -1107,7 +1112,7 @@ static esp_err_t control_humidifier_device(const char *action)
     if (err == ESP_OK) {
         s_ir_humidifier_on = desired;
         s_ir_humidifier_known = true;
-        ESP_LOGI(TAG, "IR 加湿器 request -> %s", desired ? "on" : "off");
+        ESP_LOGI(TAG, "IR 鍔犳箍鍣?request -> %s", desired ? "on" : "off");
     }
     return err;
 }
@@ -1123,7 +1128,7 @@ static esp_err_t control_air_conditioner_device(const char *action)
     if (err == ESP_OK) {
         s_ir_air_conditioner_on = desired;
         s_ir_air_conditioner_known = true;
-        ESP_LOGI(TAG, "IR 空调 request -> %s", desired ? "on" : "off");
+        ESP_LOGI(TAG, "IR 绌鸿皟 request -> %s", desired ? "on" : "off");
     }
     return err;
 }
@@ -1135,7 +1140,7 @@ esp_err_t sensor_ir_control_device(const char *device, const char *action)
     }
 
     if (strcmp(device, "fan") == 0) {
-        return control_toggle_device("风扇", s_signal_fan, FAN_PAIRS,
+        return control_toggle_device("椋庢墖", s_signal_fan, FAN_PAIRS,
                                      &s_ir_fan_on, &s_ir_fan_known, action);
     }
     if (strcmp(device, "humidifier") == 0 || strcmp(device, "humid") == 0) {
@@ -1169,5 +1174,6 @@ void sensor_ir_get_air_conditioner_state(bool *air_conditioner_on)
 
 void sensor_poll_ir(void)
 {
-    /* TX 调通前不轮询 RX，避免接收转发干扰判断发射波形。GPIO13 暂保留给红外接收。 */
+    /* TX 璋冮€氬墠涓嶈疆璇?RX锛岄伩鍏嶆帴鏀惰浆鍙戝共鎵板垽鏂彂灏勬尝褰€侴PIO13 鏆備繚鐣欑粰绾㈠鎺ユ敹銆?*/
 }
+

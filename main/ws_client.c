@@ -19,6 +19,7 @@
 #include "opus.h"
 #include "mbedtls/base64.h"
 #include "sensors.h"
+#include "snore_detector.h"
 
 static const char *TAG = "ws_client";
 
@@ -103,6 +104,22 @@ static float clamp_pillow_pressure_kpa(float value)
     if (value < PILLOW_PRESSURE_MIN_KPA) return PILLOW_PRESSURE_MIN_KPA;
     if (value > PILLOW_PRESSURE_MAX_KPA) return PILLOW_PRESSURE_MAX_KPA;
     return value;
+}
+
+bool ws_client_request_pillow_tilt_to_kpa(float target_kpa, const char *source)
+{
+    target_kpa = clamp_pillow_pressure_kpa(target_kpa);
+    s_pump_target_kpa = target_kpa;
+    s_pump_cmd = PUMP_TILT_TO_KPA;
+    s_pump_dur = 0;
+    if (s_pump_task) {
+        xTaskNotifyGive(s_pump_task);
+        printf("[pillow] local request source=%s tilt_to %.2f kPa\n",
+               source ? source : "local",
+               (double)target_kpa);
+        return true;
+    }
+    return false;
 }
 
 static int clamp_int_value(int value, int low, int high)
@@ -879,6 +896,29 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                               air_conditioner_on ? "true" : "false",
                               ir_ret);
                     ws_client_send_raw(ir_state);
+                }
+                else if (strcmp(type->valuestring, "snore_policy") == 0) {
+                    cJSON *enabled_item = cJSON_GetObjectItem(json, "enabled");
+                    cJSON *sleep_item = cJSON_GetObjectItem(json, "sleep_active");
+                    cJSON *target_item = cJSON_GetObjectItem(json, "target_kpa");
+                    cJSON *cooldown_item = cJSON_GetObjectItem(json, "cooldown_sec");
+                    bool enabled = enabled_item ? cJSON_IsTrue(enabled_item) : true;
+                    bool sleep_active = sleep_item ? cJSON_IsTrue(sleep_item) : false;
+                    float target_kpa = cJSON_IsNumber(target_item)
+                                           ? (float)cJSON_GetNumberValue(target_item)
+                                           : 4.0f;
+                    int cooldown_sec = cJSON_IsNumber(cooldown_item)
+                                           ? cooldown_item->valueint
+                                           : 300;
+                    snore_detector_set_policy(enabled, sleep_active, target_kpa, cooldown_sec);
+                    printf("[snore] policy enabled=%d sleep=%d target=%.2f cooldown=%d\n",
+                           enabled ? 1 : 0,
+                           sleep_active ? 1 : 0,
+                           (double)target_kpa,
+                           cooldown_sec);
+                    if (enabled && sleep_active) {
+                        screen_anim_set_subtitle("睡眠", "鼾声监测待命中");
+                    }
                 }
                 else if (strcmp(type->valuestring, "pillow_cmd") == 0) {
                     const char *action = cJSON_GetStringValue(cJSON_GetObjectItem(json, "action"));

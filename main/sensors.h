@@ -102,6 +102,7 @@ void sensor_request_refresh(void);
  * 返回 true 一次后自动清除。仅在非对话状态调用。
  */
 bool sensor_person_just_laid_down(void);
+bool sensor_person_on_bed(void);
 
 /**
  * 红外接收预留接口。当前为了先稳定调通 KY-005 发射，主循环调用时不执行接收转发。

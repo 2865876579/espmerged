@@ -21,6 +21,7 @@
 #include "screen_anim.h"
 #include "sensors.h"
 #include "usart.h"
+#include "snore_detector.h"
 
 #define WIFI_SSID  "qwe"
 #define WIFI_PASS  "12345678"
@@ -462,10 +463,12 @@ static void run_sleep_greeting(void)
 static void run_one_shot_reply(void)
 {
     s_dialog_active = true;
+    snore_detector_set_interaction_active(true);
     s_wake_event = false;
 
     if (!wait_for_ws_connected(WS_READY_TIMEOUT_MS)) {
         s_dialog_active = false;
+        snore_detector_set_interaction_active(false);
         return;
     }
 
@@ -485,16 +488,19 @@ static void run_one_shot_reply(void)
     ws_client_clear_events();
     s_wake_event = false;
     s_dialog_active = false;
+    snore_detector_set_interaction_active(false);
 }
 
 static void run_dialog(void)
 {
     s_dialog_active = true;
+    snore_detector_set_interaction_active(true);
     s_wake_event = false;
 
     printf("\n[唤醒] 你好小安 → 进入对话\n");
     if (!wait_for_ws_connected(WS_READY_TIMEOUT_MS)) {
         s_dialog_active = false;
+        snore_detector_set_interaction_active(false);
         return;
     }
 
@@ -505,6 +511,7 @@ static void run_dialog(void)
     turn_wait_result_t wake_result = wait_for_turn_result(3000);
     if (wake_result == TURN_WS_LOST) {
         s_dialog_active = false;
+        snore_detector_set_interaction_active(false);
         return;
     }
     // timeout 或 turn_done：继续录音
@@ -537,6 +544,7 @@ static void run_dialog(void)
     ws_client_clear_events();
     s_wake_event = false;
     s_dialog_active = false;
+    snore_detector_set_interaction_active(false);
 }
 
 static void on_wake_word(void)
@@ -741,6 +749,7 @@ void app_main(void)
         ESP_LOGE(TAG, "AFE init failed");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
+    snore_detector_start();
 
     vTaskDelay(pdMS_TO_TICKS(1500));
 

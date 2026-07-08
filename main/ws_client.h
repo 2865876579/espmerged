@@ -37,6 +37,7 @@ bool ws_client_consume_turn_done(void);
 bool ws_client_consume_dialog_end(void);
 bool ws_client_consume_listen_once_request(void);
 bool ws_client_has_listen_once_request(void);
+bool ws_client_request_pillow_tilt_to_kpa(float target_kpa, const char *source);
 
 #ifdef __cplusplus
 }

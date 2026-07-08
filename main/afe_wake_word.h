@@ -26,6 +26,7 @@ void afe_capture_start(int max_samples);
 int16_t *afe_capture_finish(int *out_samples);
 int afe_capture_samples(void);
 int afe_capture_read_from(int sample_offset, int16_t *out, int max_samples);
+int afe_recent_audio_copy_latest(int16_t *out, int samples, uint32_t *out_total_written);
 
 /** 录音是否完成（已满、超时无语音、或说话结束） */
 bool afe_capture_is_done(void);

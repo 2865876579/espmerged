@@ -1,4 +1,4 @@
-#include "usart.h"
+﻿#include "usart.h"
 #include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -38,7 +38,7 @@
 #define TJC_OBJ_BREATH_RATE  TJC_PAGE_NAME ".t6"
 #define TJC_OBJ_BODY_TEMP    TJC_PAGE_NAME ".t7"
 #define TJC_OBJ_ALARM        TJC_PAGE_NAME ".t8"
-#define TJC_PERSON_PRESENT_FORCE_N 2.0f
+#define TJC_PERSON_PRESENT_FORCE_N 0.05f
 #define TJC_CURVE_PAGE_NAME "page2"
 #define TJC_OBJ_CURVE_HEART "t_hr_now"
 #define TJC_OBJ_CURVE_BREATH "t_br_now"
@@ -671,3 +671,4 @@ esp_err_t usart_tjc_update_sleep_home(float temp_c,
 
     return first_err;
 }
+

@@ -56,10 +56,72 @@ static volatile int s_cooldown = 0;
 // I2S1 RX 句柄
 static i2s_chan_handle_t s_rx_chan = NULL;
 
+
+#define AFE_RECENT_PCM_RING_SAMPLES 32768
+static int16_t *s_recent_pcm_ring = NULL;
+static volatile uint32_t s_recent_pcm_total = 0;
+static portMUX_TYPE s_recent_pcm_lock = portMUX_INITIALIZER_UNLOCKED;
+
 // feed/fetch 参数
 static int s_feed_chunksize  = 0;
 static int s_feed_channels   = 0;
 static int s_fetch_chunksize = 0;
+
+static void recent_pcm_write(const int16_t *pcm, int samples)
+{
+    if (!s_recent_pcm_ring || !pcm || samples <= 0) {
+        return;
+    }
+    if (samples > AFE_RECENT_PCM_RING_SAMPLES) {
+        pcm += samples - AFE_RECENT_PCM_RING_SAMPLES;
+        samples = AFE_RECENT_PCM_RING_SAMPLES;
+    }
+
+    portENTER_CRITICAL(&s_recent_pcm_lock);
+    uint32_t total = s_recent_pcm_total;
+    int pos = (int)(total % AFE_RECENT_PCM_RING_SAMPLES);
+    int first = AFE_RECENT_PCM_RING_SAMPLES - pos;
+    if (first > samples) first = samples;
+    memcpy(s_recent_pcm_ring + pos, pcm, first * sizeof(int16_t));
+    if (samples > first) {
+        memcpy(s_recent_pcm_ring, pcm + first, (samples - first) * sizeof(int16_t));
+    }
+    s_recent_pcm_total = total + (uint32_t)samples;
+    portEXIT_CRITICAL(&s_recent_pcm_lock);
+}
+
+int afe_recent_audio_copy_latest(int16_t *out, int samples, uint32_t *out_total_written)
+{
+    if (!out || samples <= 0 || !s_recent_pcm_ring) {
+        if (out_total_written) *out_total_written = 0;
+        return 0;
+    }
+    if (samples > AFE_RECENT_PCM_RING_SAMPLES) {
+        samples = AFE_RECENT_PCM_RING_SAMPLES;
+    }
+
+    portENTER_CRITICAL(&s_recent_pcm_lock);
+    uint32_t total = s_recent_pcm_total;
+    int available = total < AFE_RECENT_PCM_RING_SAMPLES
+                        ? (int)total
+                        : AFE_RECENT_PCM_RING_SAMPLES;
+    int to_copy = samples <= available ? samples : available;
+    int start = (int)((total - (uint32_t)to_copy) % AFE_RECENT_PCM_RING_SAMPLES);
+    int first = AFE_RECENT_PCM_RING_SAMPLES - start;
+    if (first > to_copy) first = to_copy;
+    if (to_copy > 0) {
+        memcpy(out, s_recent_pcm_ring + start, first * sizeof(int16_t));
+        if (to_copy > first) {
+            memcpy(out + first, s_recent_pcm_ring, (to_copy - first) * sizeof(int16_t));
+        }
+    }
+    portEXIT_CRITICAL(&s_recent_pcm_lock);
+
+    if (out_total_written) {
+        *out_total_written = total;
+    }
+    return to_copy;
+}
 
 static bool capture_chunk_has_voice(const int16_t *data, int samples)
 {
@@ -134,6 +196,15 @@ static void afe_feed_task(void *arg)
         }
     }
 
+    int16_t *snore_mono_buf = heap_caps_malloc(s_feed_chunksize * sizeof(int16_t),
+                                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!snore_mono_buf) {
+        snore_mono_buf = malloc(s_feed_chunksize * sizeof(int16_t));
+    }
+    if (!snore_mono_buf) {
+        ESP_LOGW(TAG, "recent PCM buffer disabled");
+    }
+
     ESP_LOGI(TAG, "feed task started, chunk=%d ch=%d aec=%d", s_feed_chunksize, ch, ch >= 2);
 
     // DMA 累积缓冲：每帧 511×2×4=4088 bytes (32-bit stereo I2S, 驱动限制511帧)
@@ -144,6 +215,7 @@ static void afe_feed_task(void *arg)
                                      MALLOC_CAP_SPIRAM);
     if (!acc) {
         ESP_LOGE(TAG, "acc malloc failed");
+        free(snore_mono_buf);
         free(feed_buf);
         vTaskDelete(NULL);
         return;
@@ -179,12 +251,19 @@ static void afe_feed_task(void *arg)
                 // INMP441: 24-bit 左对齐在 32-bit slot → 取高 16bit
                 int16_t mic = (int16_t)(acc[i * 2] >> 16);
                 feed_buf[i * ch] = mic;
+                if (snore_mono_buf) {
+                    snore_mono_buf[i] = mic;
+                }
                 if (ch >= 2) {
                     feed_buf[i * ch + 1] = ref_buf[i];  // 参考 = 喇叭输出
                 }
             }
 
             // 第一帧快速验证 I2S 格式（仅首次）
+            if (snore_mono_buf) {
+                recent_pcm_write(snore_mono_buf, s_feed_chunksize);
+            }
+
             if (cycle == 1) {
                 int16_t mic0 = (int16_t)(acc[0] >> 16);
                 ESP_LOGI(TAG, "mic working, first sample=%d", mic0);
@@ -378,6 +457,19 @@ int afe_wake_word_init(wake_word_callback_t cb)
     s_feed_chunksize  = s_afe_handle->get_feed_chunksize(s_afe_data);
     s_fetch_chunksize = s_afe_handle->get_fetch_chunksize(s_afe_data);
     int samp_rate     = s_afe_handle->get_samp_rate(s_afe_data);
+
+    if (!s_recent_pcm_ring) {
+        s_recent_pcm_ring = heap_caps_calloc(AFE_RECENT_PCM_RING_SAMPLES, sizeof(int16_t),
+                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_recent_pcm_ring) {
+            s_recent_pcm_ring = calloc(AFE_RECENT_PCM_RING_SAMPLES, sizeof(int16_t));
+        }
+        if (s_recent_pcm_ring) {
+            ESP_LOGI(TAG, "recent PCM ring ready: %d samples", AFE_RECENT_PCM_RING_SAMPLES);
+        } else {
+            ESP_LOGW(TAG, "recent PCM ring alloc failed; snore detector will wait");
+        }
+    }
 
     ESP_LOGI(TAG, "AFE init OK: feed=%d(ch=%d) fetch=%d rate=%d",
              s_feed_chunksize, s_feed_channels, s_fetch_chunksize, samp_rate);
