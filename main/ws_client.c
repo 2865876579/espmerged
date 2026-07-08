@@ -8,6 +8,7 @@
 #include "freertos/queue.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_system.h"
 #include "esp_websocket_client.h"
 #include "esp_err.h"
 #include "cJSON.h"
@@ -25,6 +26,8 @@ static const char *TAG = "ws_client";
 
 static esp_websocket_client_handle_t s_client = NULL;
 static volatile bool s_connected = false;
+static volatile TickType_t s_last_disconnected_tick = 0;
+static volatile uint32_t s_disconnect_count = 0;
 static volatile bool s_tts_active = false;
 static volatile TickType_t s_tts_guard_until_tick = 0;
 static volatile bool s_turn_done = false;
@@ -279,7 +282,13 @@ static void pump_task(void *arg) {
 
             /* 动态读数虚高：用 target+1.0kPa 做刹车点，抵消气流误差 */
             int retries = 15;
+            bool interrupted = false;
+            bool safety_stop = false;
             while (retries-- > 0) {
+                if (pump_consume_interrupt()) {
+                    interrupted = true;
+                    break;
+                }
                 float stop_at = clamp_pillow_pressure_kpa(need_inflate ? (target + 1.0f) : (target - 1.0f));
 
                 if (need_inflate) {
@@ -287,8 +296,15 @@ static void pump_task(void *arg) {
                     if (!pump_start()) { pump_clear_cooldown(); if(!pump_start()) break; }
                     int to = 300;
                     while (to-- > 0) {
+                        if (pump_consume_interrupt()) { interrupted = true; break; }
                         vTaskDelay(pdMS_TO_TICKS(100));
+                        if (pump_consume_interrupt()) { interrupted = true; break; }
                         curr = sensor_read_pressure_kpa();
+                        if (pump_run_ms() >= PUMP_MAX_RUN_MS) {
+                            safety_stop = true;
+                            printf("[枕头] 充气超过安全时长 %dms，停止闭环\n", PUMP_MAX_RUN_MS);
+                            break;
+                        }
                         if (curr >= stop_at || curr < 0) break;
                     }
                     pump_stop();
@@ -296,21 +312,41 @@ static void pump_task(void *arg) {
                     valve_open();
                     int to = 300;
                     while (to-- > 0) {
+                        if (pump_consume_interrupt()) { interrupted = true; break; }
                         vTaskDelay(pdMS_TO_TICKS(100));
+                        if (pump_consume_interrupt()) { interrupted = true; break; }
                         curr = sensor_read_pressure_kpa();
                         if (curr <= stop_at || curr < 0) break;
                     }
                     valve_close();
                 }
+                if (interrupted) {
+                    printf("[枕头] 闭环被远程停止/急停中断\n");
+                    break;
+                }
+                if (safety_stop) {
+                    break;
+                }
 
                 /* 均压验证 */
                 vTaskDelay(pdMS_TO_TICKS(300));
+                if (pump_consume_interrupt()) {
+                    interrupted = true;
+                    printf("[枕头] 闭环被远程停止/急停中断\n");
+                    break;
+                }
                 curr = sensor_read_pressure_kpa();
                 printf("[枕头] 均压 %.2f", curr);
                 bool done = need_inflate ? (curr >= target) : (curr <= target);
                 if (curr < 0 || done) { printf(" ✓\n"); break; }
                 printf(" → 继续\n");
                 pump_clear_cooldown();
+            }
+            if (interrupted) {
+                continue;
+            }
+            if (safety_stop) {
+                continue;
             }
             printf("[枕头] 闭环完成: %.2f kPa (目标 %.2f)\n", curr, target);
 
@@ -590,12 +626,18 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
     switch (event_id) {
     case WEBSOCKET_EVENT_CONNECTED:
         s_connected = true;
+        s_last_disconnected_tick = 0;
         printf("[*] 已连接云端\n");
         {
-            const char *hello_json =
-                "{\"type\":\"hello\",\"version\":1,\"transport\":\"websocket\","
-                "\"audio_params\":{\"format\":\"opus\",\"sample_rate\":16000,"
-                "\"channels\":1,\"frame_duration\":60}}";
+            char hello_json[256];
+            snprintf(hello_json, sizeof(hello_json),
+                     "{\"type\":\"hello\",\"version\":1,\"transport\":\"websocket\","
+                     "\"free_heap\":%u,\"min_free_heap\":%u,\"disconnect_count\":%lu,"
+                     "\"audio_params\":{\"format\":\"opus\",\"sample_rate\":16000,"
+                     "\"channels\":1,\"frame_duration\":60}}",
+                     (unsigned)esp_get_free_heap_size(),
+                     (unsigned)esp_get_minimum_free_heap_size(),
+                     (unsigned long)s_disconnect_count);
             esp_websocket_client_send_text(s_client, hello_json, strlen(hello_json),
                                            pdMS_TO_TICKS(1000));
         }
@@ -603,7 +645,13 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
 
     case WEBSOCKET_EVENT_DISCONNECTED:
         s_connected = false;
+        s_last_disconnected_tick = xTaskGetTickCount();
+        s_disconnect_count++;
         s_tts_active = false;
+        ESP_LOGW(TAG, "websocket disconnected count=%lu free_heap=%u min_free_heap=%u",
+                 (unsigned long)s_disconnect_count,
+                 (unsigned)esp_get_free_heap_size(),
+                 (unsigned)esp_get_minimum_free_heap_size());
         // 通知 audio task 重置解码器 + 停止播放
         {
             clear_audio_queue();
@@ -952,6 +1000,9 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                         }
                         printf("[枕头] LLM指令: %s %ds (排队中)\n", action, dur);
                     }
+                    if (s_pump_cmd != PUMP_NONE && s_pump_task) {
+                        xTaskNotifyGive(s_pump_task);
+                    }
                 }
                 else if (strcmp(type->valuestring, "read_sensors") == 0) {
                     // ★ LLM 请求传感器数据：即时刷新 → 读最新数据
@@ -1029,8 +1080,15 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     cJSON_AddItemToObject(resp, "data", data_obj);
 
                     char *json_str = cJSON_PrintUnformatted(resp);
-                    ws_client_send_raw(json_str);
-                    free(json_str);
+                    if (json_str) {
+                        ws_client_send_raw(json_str);
+                        free(json_str);
+                    } else {
+                        ESP_LOGE(TAG, "sensor_data JSON alloc failed free_heap=%u min_free_heap=%u",
+                                 (unsigned)esp_get_free_heap_size(),
+                                 (unsigned)esp_get_minimum_free_heap_size());
+                        ws_client_send_raw("{\"type\":\"sensor_data\",\"data\":{\"error\":\"json_alloc_failed\"}}");
+                    }
                     cJSON_Delete(resp);
                     if (sd.neck_temp_valid) {
                         printf("[ntc] neck_temp=%.1fC\n", sd.neck_temp_c);
@@ -1055,6 +1113,15 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
         break;
 
     case WEBSOCKET_EVENT_ERROR:
+        s_last_disconnected_tick = xTaskGetTickCount();
+        ESP_LOGW(TAG,
+                 "websocket error type=%d esp_err=%s stack=%d sock_errno=%d status=%d free_heap=%u",
+                 data ? data->error_handle.error_type : -1,
+                 data ? esp_err_to_name(data->error_handle.esp_tls_last_esp_err) : "NULL",
+                 data ? data->error_handle.esp_tls_stack_err : 0,
+                 data ? data->error_handle.esp_transport_sock_errno : 0,
+                 data ? data->error_handle.esp_ws_handshake_status_code : 0,
+                 (unsigned)esp_get_free_heap_size());
         break;
 
     default:
@@ -1098,10 +1165,12 @@ void ws_client_start(const char *uri)
     esp_websocket_client_config_t ws_cfg = {
         .uri = uri,
         .buffer_size = 8192,
-        .reconnect_timeout_ms = 10000,
+        .reconnect_timeout_ms = 5000,
         .network_timeout_ms = 15000,
-        .ping_interval_sec = 2,           // 每 3 秒发 ping 防止云 SLB 杀空闲连接
-        .pingpong_timeout_sec = 0,          // 应用层 keepalive 已覆盖，协议层不管
+        .ping_interval_sec = 15,
+        .pingpong_timeout_sec = 10,
+        .disable_pingpong_discon = true,
+        .enable_close_reconnect = true,
         .disable_auto_reconnect = false,
         .task_stack = 12288,
     };
@@ -1181,6 +1250,19 @@ bool ws_client_send_binary(const uint8_t *data, int len)
 bool ws_client_is_connected(void)
 {
     return s_connected && s_client && esp_websocket_client_is_connected(s_client);
+}
+
+uint32_t ws_client_disconnected_ms(void)
+{
+    if (ws_client_is_connected()) {
+        return 0;
+    }
+    TickType_t since = s_last_disconnected_tick;
+    if (since == 0) {
+        return UINT32_MAX;
+    }
+    TickType_t elapsed = xTaskGetTickCount() - since;
+    return (uint32_t)(elapsed * portTICK_PERIOD_MS);
 }
 
 bool ws_client_is_tts_active(void)

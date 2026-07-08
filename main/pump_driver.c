@@ -91,9 +91,9 @@ bool pump_start(void)
 
 void pump_stop(void)
 {
+    pump_set_duty(0);
     if (!s_pump_running) return;
 
-    pump_set_duty(0);
     s_pump_running  = false;
     s_cooldown_until_us = esp_timer_get_time() + PUMP_COOLDOWN_MS * 1000LL;
     ESP_LOGI(TAG, "pump STOP  run=%lldms  cooldown=%dms",

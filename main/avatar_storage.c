@@ -11,7 +11,7 @@
 #include "esp_partition.h"
 #include "spi_flash_mmap.h"
 
-#define ENABLE_CUSTOM_AVATAR_STORAGE 0
+#define ENABLE_CUSTOM_AVATAR_STORAGE 1
 #define AVATAR_PARTITION_LABEL "avatar"
 #define AVATAR_MAGIC "XAVATAR"
 #define AVATAR_MAGIC_LEN 8

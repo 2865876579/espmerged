@@ -205,7 +205,7 @@ static bool  s_last_fsr_valid[FSR_SENSOR_COUNT];
 static bool  s_motion_baseline_ready;
 
 /* 鈹€鈹€ 浜哄憳灏卞瘽妫€娴嬶紙FSR 鍔涙晱浼犳劅鍣級鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
-#define PERSON_FSR_THRESHOLD_N  0.10f
+#define PERSON_FSR_THRESHOLD_N  0.05f
 #define PERSON_DEBOUNCE_COUNT    2       // 杩炵画2绉掔‘璁?
 static volatile bool s_person_on_bed  = false;
 static volatile bool s_person_event   = false;

@@ -9,6 +9,7 @@
 #include "freertos/idf_additions.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "driver/uart.h"
 #include "esp_err.h"
 #include "wifi.h"
@@ -39,7 +40,7 @@
 
 #define WAKE_TRIGGER_TEXT "__wake__"
 #define WS_READY_TIMEOUT_MS 10000
-#define WS_RESTART_INTERVAL_MS 5000
+#define WS_RESTART_INTERVAL_MS 30000
 #define TURN_REPLY_TIMEOUT_MS 60000
 #define NO_SPEECH_DELAY_MS 250
 #define ENABLE_UART_TEXT_INPUT 0
@@ -699,6 +700,11 @@ static void on_tjc_rx(const char *message, int page_id, void *user_ctx)
 void app_main(void)
 {
     printf("\n========== 智能枕头 v1.0 ==========\n\n");
+    esp_reset_reason_t reset_reason = esp_reset_reason();
+    ESP_LOGW(TAG, "boot reset_reason=%d free_heap=%u min_free_heap=%u",
+             (int)reset_reason,
+             (unsigned)esp_get_free_heap_size(),
+             (unsigned)esp_get_minimum_free_heap_size());
     if (!start_opus_upload_task()) {
         ESP_LOGE(TAG, "Opus task init failed");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
@@ -781,7 +787,11 @@ void app_main(void)
 
         if (!s_dialog_active && !ws_client_is_connected()) {
             TickType_t now = xTaskGetTickCount();
-            if ((now - last_ws_restart) >= pdMS_TO_TICKS(WS_RESTART_INTERVAL_MS)) {
+            uint32_t disconnected_ms = ws_client_disconnected_ms();
+            if (disconnected_ms >= WS_RESTART_INTERVAL_MS &&
+                (now - last_ws_restart) >= pdMS_TO_TICKS(WS_RESTART_INTERVAL_MS)) {
+                ESP_LOGW(TAG, "websocket still offline for %lu ms, force restart",
+                         (unsigned long)disconnected_ms);
                 ws_client_restart();
                 last_ws_restart = now;
             }
