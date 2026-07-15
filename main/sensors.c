@@ -541,22 +541,33 @@ static void calibrate_fsr_zero(void)
 static void read_mcp5010dp(sensor_data_t *out)
 {
     out->pressure_valid = false;
-    if (!s_mcp_ads_ready || !s_i2c0_mutex) return;
+    if (!s_mcp_ads_ready || !s_i2c0_mutex) {
+        ESP_LOGW(TAG, "pressure unavailable: ads_ready=%d mutex=%p",
+                 s_mcp_ads_ready ? 1 : 0, (void *)s_i2c0_mutex);
+        return;
+    }
 
-    if (xSemaphoreTake(s_i2c0_mutex, pdMS_TO_TICKS(200)) != pdTRUE) return;
+    if (xSemaphoreTake(s_i2c0_mutex, pdMS_TO_TICKS(200)) != pdTRUE) {
+        ESP_LOGW(TAG, "pressure read skipped: I2C0 mutex timeout");
+        return;
+    }
     int16_t raw;
     float adc_v;
     esp_err_t err = read_ads_voltage(&s_mcp_ads, ADS1115_MUX_AIN0_GND, &raw, &adc_v);
     xSemaphoreGive(s_i2c0_mutex);
 
-    if (err != ESP_OK) return;
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "pressure AIN0 read failed: %s", esp_err_to_name(err));
+        return;
+    }
     float sensor_v = mcp_adc_to_sensor_voltage(adc_v);
     float kpa = mcp_voltage_to_pressure_kpa(sensor_v);
     out->pressure_kpa = kpa;
     out->pressure_valid = true;
 
     if (s_usart_ready) usart_tjc_set_t7_pressure_kpa(kpa);
-    ESP_LOGD(TAG, "MCP5010DP raw=%d adc=%.3fV sensor=%.3fV kpa=%.2f",
+    ESP_LOGI(TAG,
+             "pressure raw=%d ain0=%.4fV vout=%.4fV kpa=%.2f valid=1",
              raw, adc_v, sensor_v, kpa);
 }
 
@@ -832,8 +843,9 @@ void sensor_task(void *arg)
         if (data.neck_temp_valid) {
             ESP_LOGI(
                 TAG,
-                "[pressure] kPa=%.2f neck_temp=%.1fC fsr=[%.2f, %.2f, %.2f, %.2f]N radar_hr=%u radar_br=%u",
+                "[pressure] kPa=%.2f valid=%d neck_temp=%.1fC fsr=[%.2f, %.2f, %.2f, %.2f]N radar_hr=%u radar_br=%u",
                 data.pressure_kpa,
+                data.pressure_valid ? 1 : 0,
                 data.neck_temp_c,
                 data.fsr_force_n[0],
                 data.fsr_force_n[1],
@@ -845,8 +857,9 @@ void sensor_task(void *arg)
         } else {
             ESP_LOGI(
                 TAG,
-                "[pressure] kPa=%.2f neck_temp=NA fsr=[%.2f, %.2f, %.2f, %.2f]N radar_hr=%u radar_br=%u",
+                "[pressure] kPa=%.2f valid=%d neck_temp=NA fsr=[%.2f, %.2f, %.2f, %.2f]N radar_hr=%u radar_br=%u",
                 data.pressure_kpa,
+                data.pressure_valid ? 1 : 0,
                 data.fsr_force_n[0],
                 data.fsr_force_n[1],
                 data.fsr_force_n[2],

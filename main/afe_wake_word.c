@@ -57,7 +57,9 @@ static volatile int s_cooldown = 0;
 static i2s_chan_handle_t s_rx_chan = NULL;
 
 
-#define AFE_RECENT_PCM_RING_SAMPLES 32768
+// Keep twice the inference window so a lock-free snapshot cannot be
+// overwritten while the snore task copies the latest two seconds.
+#define AFE_RECENT_PCM_RING_SAMPLES 65536
 static int16_t *s_recent_pcm_ring = NULL;
 static volatile uint32_t s_recent_pcm_total = 0;
 static portMUX_TYPE s_recent_pcm_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -100,6 +102,9 @@ int afe_recent_audio_copy_latest(int16_t *out, int samples, uint32_t *out_total_
         samples = AFE_RECENT_PCM_RING_SAMPLES;
     }
 
+    // Only snapshot the writer position under the spinlock. Copying a full
+    // inference window from PSRAM while holding this lock used to stall the
+    // real-time AFE feed task and made WakeNet miss wake words.
     portENTER_CRITICAL(&s_recent_pcm_lock);
     uint32_t total = s_recent_pcm_total;
     int available = total < AFE_RECENT_PCM_RING_SAMPLES
@@ -107,6 +112,8 @@ int afe_recent_audio_copy_latest(int16_t *out, int samples, uint32_t *out_total_
                         : AFE_RECENT_PCM_RING_SAMPLES;
     int to_copy = samples <= available ? samples : available;
     int start = (int)((total - (uint32_t)to_copy) % AFE_RECENT_PCM_RING_SAMPLES);
+    portEXIT_CRITICAL(&s_recent_pcm_lock);
+
     int first = AFE_RECENT_PCM_RING_SAMPLES - start;
     if (first > to_copy) first = to_copy;
     if (to_copy > 0) {
@@ -115,7 +122,6 @@ int afe_recent_audio_copy_latest(int16_t *out, int samples, uint32_t *out_total_
             memcpy(out + first, s_recent_pcm_ring, (to_copy - first) * sizeof(int16_t));
         }
     }
-    portEXIT_CRITICAL(&s_recent_pcm_lock);
 
     if (out_total_written) {
         *out_total_written = total;

@@ -1,5 +1,6 @@
 #include "ads1115_fsr402.h"
 #include "esp_check.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -57,12 +58,17 @@ esp_err_t ads1115_init(const ads1115_t *dev)
     ESP_RETURN_ON_ERROR(i2c_param_config(dev->i2c_port, &conf), TAG, "i2c param config failed");
 
     esp_err_t ret = i2c_driver_install(dev->i2c_port, conf.mode, 0, 0, 0);
-    if (ret == ESP_ERR_INVALID_STATE) {
-        // 如果 I2C 驱动已经安装过，直接认为初始化成功。
-        return ESP_OK;
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        return ret;
     }
 
-    return ret;
+    // 安装驱动成功不代表 ADS1115 存在；读取配置寄存器确认地址真实应答。
+    uint16_t config = 0;
+    ESP_RETURN_ON_ERROR(ads1115_read_reg(dev, ADS1115_REG_CONFIG, &config),
+                        TAG, "probe addr 0x%02x failed", dev->address);
+    ESP_LOGI(TAG, "ready port=%d addr=0x%02x config=0x%04x",
+             dev->i2c_port, dev->address, config);
+    return ESP_OK;
 }
 
 esp_err_t ads1115_read_raw(const ads1115_t *dev, ads1115_mux_t mux, int16_t *raw)
@@ -91,6 +97,9 @@ esp_err_t ads1115_read_raw(const ads1115_t *dev, ads1115_mux_t mux, int16_t *raw
         ESP_RETURN_ON_ERROR(ads1115_read_reg(dev, ADS1115_REG_CONFIG, &status),
                             TAG, "poll conversion failed");
     } while ((status & ADS1115_CONFIG_OS_READY) == 0 && xTaskGetTickCount() < deadline);
+
+    ESP_RETURN_ON_FALSE((status & ADS1115_CONFIG_OS_READY) != 0,
+                        ESP_ERR_TIMEOUT, TAG, "conversion timeout");
 
     ESP_RETURN_ON_ERROR(ads1115_read_reg(dev, ADS1115_REG_CONVERSION, &status),
                         TAG, "read conversion failed");
