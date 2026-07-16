@@ -13,7 +13,6 @@ extern "C" {
  * Receives tts_audio_chunk PCM and plays through I2S.
  */
 void ws_client_start(const char *uri);
-void ws_client_restart(void);
 
 /**
  * Send a text message to the cloud LLM.
@@ -33,6 +32,7 @@ bool ws_client_is_connected(void);
 uint32_t ws_client_disconnected_ms(void);
 bool ws_client_is_tts_active(void);
 bool ws_client_is_tts_guard_active(void);
+bool ws_client_consume_wake_ack(uint32_t wake_id);
 void ws_client_clear_events(void);
 bool ws_client_consume_turn_done(void);
 bool ws_client_consume_dialog_end(void);

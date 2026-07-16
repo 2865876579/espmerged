@@ -9,6 +9,7 @@
 #include "freertos/idf_additions.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_system.h"
 #include "driver/uart.h"
 #include "esp_err.h"
@@ -40,7 +41,8 @@
 
 #define WAKE_TRIGGER_TEXT "__wake__"
 #define WS_READY_TIMEOUT_MS 10000
-#define WS_RESTART_INTERVAL_MS 30000
+#define WAKE_REPLY_RETRY_COUNT 3
+#define WAKE_ACK_TIMEOUT_MS 1500
 #define TURN_REPLY_TIMEOUT_MS 60000
 #define NO_SPEECH_DELAY_MS 250
 #define ENABLE_UART_TEXT_INPUT 0
@@ -58,6 +60,7 @@ static QueueHandle_t s_opus_upload_queue = NULL;
 static TaskHandle_t s_opus_upload_task = NULL;
 static char s_ai_persona[12] = "PRO";
 static volatile float s_tjc_saved_pressure_kpa = -1.0f;
+static uint32_t s_wake_request_id = 0;
 
 // 借鉴 xiaozhi：保护 AFE capture 状态的 spinlock，防止 fetch 任务
 // 和主循环同时访问 capture buffer 造成 use-after-free
@@ -492,6 +495,68 @@ static void run_one_shot_reply(void)
     snore_detector_set_interaction_active(false);
 }
 
+static turn_wait_result_t request_wake_reply(void)
+{
+    if (s_wake_request_id == 0) {
+        s_wake_request_id = esp_random();
+    }
+    uint32_t wake_id = ++s_wake_request_id;
+    if (wake_id == 0) {
+        wake_id = ++s_wake_request_id;
+    }
+
+    for (int attempt = 1; attempt <= WAKE_REPLY_RETRY_COUNT; attempt++) {
+        if (!wait_for_ws_connected(WS_READY_TIMEOUT_MS)) {
+            ESP_LOGW(TAG, "wake reply: websocket unavailable attempt=%d/%d",
+                     attempt, WAKE_REPLY_RETRY_COUNT);
+            continue;
+        }
+
+        ws_client_clear_events();
+        char request[160];
+        snprintf(request, sizeof(request),
+                 "{\"type\":\"listen\",\"state\":\"detect\","
+                 "\"text\":\"你好小安\",\"wake_id\":%lu}",
+                 (unsigned long)wake_id);
+        bool sent = ws_client_send_raw(request);
+        if (!sent) {
+            ESP_LOGW(TAG, "wake reply: send failed attempt=%d/%d",
+                     attempt, WAKE_REPLY_RETRY_COUNT);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            continue;
+        }
+
+        bool acknowledged = false;
+        int ack_waited = 0;
+        while (ack_waited < WAKE_ACK_TIMEOUT_MS) {
+            if (ws_client_consume_wake_ack(wake_id)) {
+                acknowledged = true;
+                break;
+            }
+            if (!ws_client_is_connected()) {
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(50));
+            ack_waited += 50;
+        }
+
+        if (!acknowledged) {
+            ESP_LOGW(TAG, "wake reply: no ack id=%lu attempt=%d/%d",
+                     (unsigned long)wake_id, attempt, WAKE_REPLY_RETRY_COUNT);
+            continue;
+        }
+
+        turn_wait_result_t result = wait_for_turn_result(5000);
+        if (result == TURN_DONE || result == TURN_DIALOG_END) {
+            return result;
+        }
+
+        ESP_LOGW(TAG, "wake reply: incomplete id=%lu result=%d attempt=%d/%d",
+                 (unsigned long)wake_id, result, attempt, WAKE_REPLY_RETRY_COUNT);
+    }
+    return TURN_WS_LOST;
+}
+
 static void run_dialog(void)
 {
     s_dialog_active = true;
@@ -499,17 +564,7 @@ static void run_dialog(void)
     s_wake_event = false;
 
     printf("\n[唤醒] 你好小安 → 进入对话\n");
-    if (!wait_for_ws_connected(WS_READY_TIMEOUT_MS)) {
-        s_dialog_active = false;
-        snore_detector_set_interaction_active(false);
-        return;
-    }
-
-    ws_client_clear_events();
-    ws_client_send_raw("{\"type\":\"listen\",\"state\":\"detect\",\"text\":\"你好小安\"}");
-
-    // 等服务器问候语（tts start 已占住连接，音频帧随后就到）
-    turn_wait_result_t wake_result = wait_for_turn_result(3000);
+    turn_wait_result_t wake_result = request_wake_reply();
     if (wake_result == TURN_WS_LOST) {
         s_dialog_active = false;
         snore_detector_set_interaction_active(false);
@@ -764,7 +819,6 @@ void app_main(void)
 #if ENABLE_UART_TEXT_INPUT
     uint8_t rx_buf[128];
 #endif
-    TickType_t last_ws_restart = xTaskGetTickCount();
     while (1) {
         bool tts_guard = ws_client_is_tts_guard_active();
         if (tts_guard) {
@@ -783,20 +837,6 @@ void app_main(void)
 
         if (!tts_guard && s_wake_event) {
             run_dialog();
-        }
-
-        if (!s_dialog_active && !ws_client_is_connected()) {
-            TickType_t now = xTaskGetTickCount();
-            uint32_t disconnected_ms = ws_client_disconnected_ms();
-            if (disconnected_ms >= WS_RESTART_INTERVAL_MS &&
-                (now - last_ws_restart) >= pdMS_TO_TICKS(WS_RESTART_INTERVAL_MS)) {
-                ESP_LOGW(TAG, "websocket still offline for %lu ms, force restart",
-                         (unsigned long)disconnected_ms);
-                ws_client_restart();
-                last_ws_restart = now;
-            }
-        } else {
-            last_ws_restart = xTaskGetTickCount();
         }
 
 #if ENABLE_UART_TEXT_INPUT

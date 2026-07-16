@@ -8,6 +8,7 @@
 #include "freertos/queue.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_mac.h"
 #include "esp_system.h"
 #include "esp_websocket_client.h"
 #include "esp_err.h"
@@ -34,6 +35,8 @@ static volatile bool s_turn_done = false;
 static volatile bool s_dialog_end = false;
 static volatile bool s_pending_dialog_end = false;
 static volatile bool s_listen_once_pending = false;
+static volatile uint32_t s_wake_ack_id = 0;
+static char s_device_id[32] = "esp32s3-unknown";
 static QueueHandle_t s_audio_queue = NULL;  // 音频数据队列（WebSocket → Audio Task）
 static volatile uint32_t s_tts_chunks_queued = 0;
 static volatile uint32_t s_tts_chunks_dropped = 0;
@@ -629,12 +632,14 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
         s_last_disconnected_tick = 0;
         printf("[*] 已连接云端\n");
         {
-            char hello_json[256];
+            char hello_json[320];
             snprintf(hello_json, sizeof(hello_json),
                      "{\"type\":\"hello\",\"version\":1,\"transport\":\"websocket\","
+                     "\"device_id\":\"%s\","
                      "\"free_heap\":%u,\"min_free_heap\":%u,\"disconnect_count\":%lu,"
                      "\"audio_params\":{\"format\":\"opus\",\"sample_rate\":16000,"
                      "\"channels\":1,\"frame_duration\":60}}",
+                     s_device_id,
                      (unsigned)esp_get_free_heap_size(),
                      (unsigned)esp_get_minimum_free_heap_size(),
                      (unsigned long)s_disconnect_count);
@@ -1104,6 +1109,14 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                 else if (strcmp(type->valuestring, "dialog_end") == 0) {
                     end_tts_stream(true);
                 }
+                else if (strcmp(type->valuestring, "wake_ack") == 0) {
+                    cJSON *wake_id = cJSON_GetObjectItem(json, "wake_id");
+                    if (wake_id && cJSON_IsNumber(wake_id) && wake_id->valuedouble > 0) {
+                        s_wake_ack_id = (uint32_t)wake_id->valuedouble;
+                        ESP_LOGI(TAG, "wake acknowledged id=%lu",
+                                 (unsigned long)s_wake_ack_id);
+                    }
+                }
                 else if (strcmp(type->valuestring, "pong") == 0) {
                     // 心跳，忽略
                 }
@@ -1136,6 +1149,13 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
 
 void ws_client_start(const char *uri)
 {
+    uint8_t mac[6] = {0};
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+        snprintf(s_device_id, sizeof(s_device_id),
+                 "esp32s3-%02x%02x%02x%02x%02x%02x",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    }
+
     // Audio queue depth is capped to keep small queue storage out of internal RAM pressure.
     s_audio_queue = xQueueCreate(AUDIO_QUEUE_DEPTH, sizeof(audio_chunk_t));
     if (!s_audio_queue) {
@@ -1167,9 +1187,13 @@ void ws_client_start(const char *uri)
         .buffer_size = 8192,
         .reconnect_timeout_ms = 5000,
         .network_timeout_ms = 15000,
-        .ping_interval_sec = 15,
-        .pingpong_timeout_sec = 10,
-        .disable_pingpong_discon = true,
+        .ping_interval_sec = 10,
+        .pingpong_timeout_sec = 8,
+        .disable_pingpong_discon = false,
+        .keep_alive_enable = true,
+        .keep_alive_idle = 10,
+        .keep_alive_interval = 5,
+        .keep_alive_count = 3,
         .enable_close_reconnect = true,
         .disable_auto_reconnect = false,
         .task_stack = 12288,
@@ -1180,29 +1204,6 @@ void ws_client_start(const char *uri)
     esp_websocket_client_start(s_client);
 }
 
-
-void ws_client_restart(void)
-{
-    if (!s_client) return;
-
-    s_connected = false;
-    s_tts_active = false;
-    s_tts_guard_until_tick = xTaskGetTickCount() + pdMS_TO_TICKS(TTS_WAKE_GUARD_MS);
-    s_turn_done = false;
-    s_dialog_end = false;
-    s_pending_dialog_end = false;
-    s_listen_once_pending = false;
-
-    if (s_audio_queue) {
-        clear_audio_queue();
-        audio_chunk_t end = { .data = NULL, .len = 0 };
-        xQueueSend(s_audio_queue, &end, 0);
-    }
-
-    esp_websocket_client_stop(s_client);
-    vTaskDelay(pdMS_TO_TICKS(500));
-    esp_websocket_client_start(s_client);
-}
 
 bool ws_client_send_text(const char *text)
 {
@@ -1280,6 +1281,15 @@ bool ws_client_is_tts_guard_active(void)
         return false;
     }
     return (int32_t)(until - xTaskGetTickCount()) > 0;
+}
+
+bool ws_client_consume_wake_ack(uint32_t wake_id)
+{
+    if (wake_id == 0 || s_wake_ack_id != wake_id) {
+        return false;
+    }
+    s_wake_ack_id = 0;
+    return true;
 }
 
 void ws_client_clear_events(void)
