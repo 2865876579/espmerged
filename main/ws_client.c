@@ -1033,12 +1033,9 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     cJSON_AddNumberToObject(data_obj, "radar_breath_bpm", sd.radar_breath_bpm);
                     cJSON_AddBoolToObject(data_obj, "radar_valid", sd.radar_valid);
                     if (sd.radar_valid) {
-                        cJSON_AddNumberToObject(data_obj, "heart_rate", sd.radar_heart_bpm);
+                        /* 使用统一字段名；服务端兼容 radar_heart_bpm / radar_breath_bpm */
                         cJSON_AddNumberToObject(data_obj, "heart_rate_bpm", sd.radar_heart_bpm);
-                        cJSON_AddNumberToObject(data_obj, "radar_hr_bpm", sd.radar_heart_bpm);
-                        cJSON_AddNumberToObject(data_obj, "breath_rate", sd.radar_breath_bpm);
                         cJSON_AddNumberToObject(data_obj, "breath_rate_bpm", sd.radar_breath_bpm);
-                        cJSON_AddNumberToObject(data_obj, "radar_br_bpm", sd.radar_breath_bpm);
                     }
                     cJSON_AddNumberToObject(data_obj, "motion_level", sd.body_motion_level);
                     cJSON_AddNumberToObject(data_obj, "body_motion", sd.body_motion_level);
@@ -1216,6 +1213,11 @@ bool ws_client_send_text(const char *text)
     cJSON_AddStringToObject(msg, "type", "text");
     cJSON_AddStringToObject(msg, "text", text);
     char *json_str = cJSON_PrintUnformatted(msg);
+    if (!json_str) {
+        ESP_LOGE(TAG, "ws_client_send_text: cJSON alloc failed");
+        cJSON_Delete(msg);
+        return false;
+    }
     int json_len = strlen(json_str);
 
     int sent = esp_websocket_client_send_text(s_client, json_str, json_len, portMAX_DELAY);

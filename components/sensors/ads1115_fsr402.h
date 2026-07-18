@@ -53,6 +53,17 @@ typedef struct {
     ads1115_data_rate_t data_rate;    // ADC 转换速率。
 } ads1115_t;
 
+typedef struct {
+    uint16_t registers[4];
+    uint16_t single_config_written;
+    uint16_t single_config_readback;
+    uint32_t single_wait_ms;
+    int16_t single_raw;
+    uint16_t continuous_config_written;
+    uint16_t continuous_config_readback;
+    int16_t continuous_raw;
+} ads1115_diagnostic_result_t;
+
 // 初始化 I2C 总线，用于和 ADS1115 通信。
 esp_err_t ads1115_init(const ads1115_t *dev);
 // 启动一次单次转换，并读取原始 16 位 ADC 数据。
@@ -61,5 +72,9 @@ esp_err_t ads1115_read_raw(const ads1115_t *dev, ads1115_mux_t mux, int16_t *raw
 float ads1115_raw_to_voltage(const ads1115_t *dev, int16_t raw);
 // 根据采样率估算一次转换大约需要等待的时间。
 uint32_t ads1115_conversion_time_ms(ads1115_data_rate_t data_rate);
+
+// Compare single-shot and continuous conversion paths and capture register state.
+esp_err_t ads1115_run_diagnostic(const ads1115_t *dev, ads1115_mux_t mux,
+                                 ads1115_diagnostic_result_t *result);
 
 #endif  // ADS1115_H

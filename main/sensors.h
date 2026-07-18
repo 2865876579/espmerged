@@ -81,7 +81,8 @@ void sensor_task(void *arg);
 /* ── 线程安全读取 ─────────────────────────────────────── */
 /**
  * 获取最新的传感器快照。
- * 可在任意任务/中断安全调用（mutex 保护）。
+ * 可在任意任务中安全调用（spinlock 保护）。
+ * 注意：不可在 ISR 中调用（portENTER_CRITICAL 非 ISR 安全版本）。
  */
 void sensor_get_latest(sensor_data_t *out);
 

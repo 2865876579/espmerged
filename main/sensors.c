@@ -62,6 +62,10 @@ static const char *TAG = "sensors";
 #define I2C_CLK_HZ              100000
 #define FSR_SENSOR_COUNT        4
 
+#define PRESSURE_DIAGNOSTICS_ENABLED  0
+#define PRESSURE_DIAG_INTERVAL_CYCLES 5
+#define PRESSURE_DIAG_SAMPLES         4
+
 /* MCP5010DP 鍒嗗帇 & 閲忕▼ */
 #define MCP_DIVIDER_TOP_OHM     4700.0f
 #define MCP_DIVIDER_BOTTOM_OHM  10000.0f
@@ -114,6 +118,10 @@ static sht31_t   s_sht31;
 
 /* 灏辩华鏍囧織 */
 static bool s_mcp_ads_ready;
+#if PRESSURE_DIAGNOSTICS_ENABLED
+static uint32_t s_pressure_near_zero_streak;
+static uint32_t s_pressure_diag_cycle;
+#endif
 static bool s_fsr_ads_ready;
 static bool s_bh1750_ready;
 static bool s_sht31_ready;
@@ -233,6 +241,115 @@ static esp_err_t read_ads_voltage(const ads1115_t *ads, ads1115_mux_t mux,
     *voltage = ads1115_raw_to_voltage(ads, *raw);
     return ESP_OK;
 }
+
+#if PRESSURE_DIAGNOSTICS_ENABLED
+static esp_err_t pressure_diag_probe_address(uint8_t address)
+{
+    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
+    if (!cmd) return ESP_ERR_NO_MEM;
+
+    i2c_master_start(cmd);
+    i2c_master_write_byte(cmd, (address << 1) | I2C_MASTER_WRITE, true);
+    i2c_master_stop(cmd);
+    esp_err_t err = i2c_master_cmd_begin(MCP_ADS_I2C_PORT, cmd, pdMS_TO_TICKS(10));
+    i2c_cmd_link_delete(cmd);
+    return err;
+}
+
+static void pressure_diag_startup(void)
+{
+    ESP_LOGI(TAG, "[pressure-diag] I2C0 scan start SDA=%d SCL=%d",
+             MCP_ADS_SDA_GPIO, MCP_ADS_SCL_GPIO);
+    int found = 0;
+    for (uint8_t address = 0x08; address <= 0x77; address++) {
+        if (pressure_diag_probe_address(address) == ESP_OK) {
+            ESP_LOGI(TAG, "[pressure-diag] I2C0 ACK addr=0x%02x", address);
+            found++;
+        }
+    }
+    ESP_LOGI(TAG, "[pressure-diag] I2C0 scan done devices=%d expected_ads=0x%02x",
+             found, MCP_ADS_ADDR);
+
+    if (!s_mcp_ads_ready) {
+        ESP_LOGW(TAG, "[pressure-diag] ADS1115-MCP is not ready; mode test skipped");
+        return;
+    }
+
+    ads1115_diagnostic_result_t diag = {0};
+    esp_err_t err = ads1115_run_diagnostic(&s_mcp_ads, ADS1115_MUX_AIN0_GND, &diag);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "[pressure-diag] ADS mode test failed: %s", esp_err_to_name(err));
+        return;
+    }
+
+    ESP_LOGI(TAG,
+             "[pressure-diag] regs conversion=0x%04x config=0x%04x lo=0x%04x hi=0x%04x",
+             diag.registers[0], diag.registers[1], diag.registers[2], diag.registers[3]);
+    ESP_LOGI(TAG,
+             "[pressure-diag] single cfg_write=0x%04x cfg_read=0x%04x wait=%lums raw=%d voltage=%.4fV",
+             diag.single_config_written, diag.single_config_readback,
+             (unsigned long)diag.single_wait_ms, diag.single_raw,
+             ads1115_raw_to_voltage(&s_mcp_ads, diag.single_raw));
+    ESP_LOGI(TAG,
+             "[pressure-diag] continuous cfg_write=0x%04x cfg_read=0x%04x raw=%d voltage=%.4fV",
+             diag.continuous_config_written, diag.continuous_config_readback,
+             diag.continuous_raw, ads1115_raw_to_voltage(&s_mcp_ads, diag.continuous_raw));
+
+    if (diag.single_raw >= -1 && diag.single_raw <= 1 &&
+        diag.continuous_raw >= -1 && diag.continuous_raw <= 1) {
+        ESP_LOGW(TAG,
+                 "[pressure-diag] AIN0 is near zero in both modes; inspect channel, divider, or ADS analog input");
+    }
+}
+
+static void pressure_diag_sample_all_channels(void)
+{
+    if (!s_mcp_ads_ready || !s_i2c0_mutex) return;
+    if (xSemaphoreTake(s_i2c0_mutex, pdMS_TO_TICKS(300)) != pdTRUE) {
+        ESP_LOGW(TAG, "[pressure-diag] channel scan mutex timeout");
+        return;
+    }
+
+    static const ads1115_mux_t muxes[4] = {
+        ADS1115_MUX_AIN0_GND,
+        ADS1115_MUX_AIN1_GND,
+        ADS1115_MUX_AIN2_GND,
+        ADS1115_MUX_AIN3_GND,
+    };
+
+    for (int channel = 0; channel < 4; channel++) {
+        int16_t min_raw = 32767;
+        int16_t max_raw = -32768;
+        int32_t sum_raw = 0;
+        int ok = 0;
+        int errors = 0;
+        for (int sample = 0; sample < PRESSURE_DIAG_SAMPLES; sample++) {
+            int16_t raw = 0;
+            esp_err_t err = ads1115_read_raw(&s_mcp_ads, muxes[channel], &raw);
+            if (err != ESP_OK) {
+                errors++;
+                continue;
+            }
+            if (raw < min_raw) min_raw = raw;
+            if (raw > max_raw) max_raw = raw;
+            sum_raw += raw;
+            ok++;
+        }
+
+        if (ok > 0) {
+            int16_t avg_raw = (int16_t)(sum_raw / ok);
+            ESP_LOGI(TAG,
+                     "[pressure-diag] AIN%d samples=%d errors=%d raw[min=%d max=%d avg=%d] voltage=%.4fV",
+                     channel, ok, errors, min_raw, max_raw, avg_raw,
+                     ads1115_raw_to_voltage(&s_mcp_ads, avg_raw));
+        } else {
+            ESP_LOGW(TAG, "[pressure-diag] AIN%d no valid samples errors=%d",
+                     channel, errors);
+        }
+    }
+    xSemaphoreGive(s_i2c0_mutex);
+}
+#endif
 
 static float mcp_adc_to_sensor_voltage(float adc_voltage)
 {
@@ -542,13 +659,17 @@ static void read_mcp5010dp(sensor_data_t *out)
 {
     out->pressure_valid = false;
     if (!s_mcp_ads_ready || !s_i2c0_mutex) {
+#if PRESSURE_DIAGNOSTICS_ENABLED
         ESP_LOGW(TAG, "pressure unavailable: ads_ready=%d mutex=%p",
                  s_mcp_ads_ready ? 1 : 0, (void *)s_i2c0_mutex);
+#endif
         return;
     }
 
     if (xSemaphoreTake(s_i2c0_mutex, pdMS_TO_TICKS(200)) != pdTRUE) {
+#if PRESSURE_DIAGNOSTICS_ENABLED
         ESP_LOGW(TAG, "pressure read skipped: I2C0 mutex timeout");
+#endif
         return;
     }
     int16_t raw;
@@ -557,7 +678,9 @@ static void read_mcp5010dp(sensor_data_t *out)
     xSemaphoreGive(s_i2c0_mutex);
 
     if (err != ESP_OK) {
+#if PRESSURE_DIAGNOSTICS_ENABLED
         ESP_LOGW(TAG, "pressure AIN0 read failed: %s", esp_err_to_name(err));
+#endif
         return;
     }
     float sensor_v = mcp_adc_to_sensor_voltage(adc_v);
@@ -565,10 +688,30 @@ static void read_mcp5010dp(sensor_data_t *out)
     out->pressure_kpa = kpa;
     out->pressure_valid = true;
 
+#if PRESSURE_DIAGNOSTICS_ENABLED
+    if (raw >= -1 && raw <= 1) {
+        s_pressure_near_zero_streak++;
+        if (s_pressure_near_zero_streak == 10 ||
+            (s_pressure_near_zero_streak > 10 && s_pressure_near_zero_streak % 30 == 0)) {
+            ESP_LOGW(TAG,
+                     "[pressure-diag] AIN0 stuck near zero for %lu reads; ADC conversion succeeds but analog value is absent",
+                     (unsigned long)s_pressure_near_zero_streak);
+        }
+    } else {
+        if (s_pressure_near_zero_streak >= 10) {
+            ESP_LOGI(TAG, "[pressure-diag] AIN0 recovered after %lu near-zero reads",
+                     (unsigned long)s_pressure_near_zero_streak);
+        }
+        s_pressure_near_zero_streak = 0;
+    }
+#endif
+
     if (s_usart_ready) usart_tjc_set_t7_pressure_kpa(kpa);
+#if PRESSURE_DIAGNOSTICS_ENABLED
     ESP_LOGI(TAG,
              "pressure raw=%d ain0=%.4fV vout=%.4fV kpa=%.2f valid=1",
              raw, adc_v, sensor_v, kpa);
+#endif
 }
 
 static void read_neck_ntc(sensor_data_t *out)
@@ -707,6 +850,10 @@ void init_sensors(void)
     /* ADS1115 #1 鈥?MCP5010DP 姘斿帇 (I2C0: GPIO8/9) */
     s_mcp_ads_ready = init_result("ADS1115-MCP", ads1115_init(&s_mcp_ads));
 
+#if PRESSURE_DIAGNOSTICS_ENABLED
+    pressure_diag_startup();
+#endif
+
     /* ADS1115 #2 鈥?FSR402脳4 (I2C1: GPIO14/15) */
     s_fsr_ads_ready = init_result("ADS1115-FSR", ads1115_init(&s_fsr_ads));
 
@@ -775,6 +922,13 @@ void sensor_task(void *arg)
 
         read_mcp5010dp(&data);
         read_neck_ntc(&data);
+#if PRESSURE_DIAGNOSTICS_ENABLED
+        s_pressure_diag_cycle++;
+        if (s_pressure_diag_cycle >= PRESSURE_DIAG_INTERVAL_CYCLES) {
+            s_pressure_diag_cycle = 0;
+            pressure_diag_sample_all_channels();
+        }
+#endif
         read_fsr402_all(&data);
         update_body_motion_from_fsr(&data);
         read_environment(&data);
@@ -840,34 +994,18 @@ void sensor_task(void *arg)
         memcpy(&s_latest, &data, sizeof(s_latest));
         portEXIT_CRITICAL(&s_data_spinlock);
 
-        if (data.neck_temp_valid) {
-            ESP_LOGI(
-                TAG,
-                "[pressure] kPa=%.2f valid=%d neck_temp=%.1fC fsr=[%.2f, %.2f, %.2f, %.2f]N radar_hr=%u radar_br=%u",
-                data.pressure_kpa,
-                data.pressure_valid ? 1 : 0,
-                data.neck_temp_c,
-                data.fsr_force_n[0],
-                data.fsr_force_n[1],
-                data.fsr_force_n[2],
-                data.fsr_force_n[3],
-                data.radar_heart_bpm,
-                data.radar_breath_bpm
-            );
-        } else {
-            ESP_LOGI(
-                TAG,
-                "[pressure] kPa=%.2f valid=%d neck_temp=NA fsr=[%.2f, %.2f, %.2f, %.2f]N radar_hr=%u radar_br=%u",
-                data.pressure_kpa,
-                data.pressure_valid ? 1 : 0,
-                data.fsr_force_n[0],
-                data.fsr_force_n[1],
-                data.fsr_force_n[2],
-                data.fsr_force_n[3],
-                data.radar_heart_bpm,
-                data.radar_breath_bpm
-            );
-        }
+        ESP_LOGI(
+            TAG,
+            "[FSR] force=[%.2f, %.2f, %.2f, %.2f]N valid=[%d, %d, %d, %d]",
+            data.fsr_force_n[0],
+            data.fsr_force_n[1],
+            data.fsr_force_n[2],
+            data.fsr_force_n[3],
+            data.fsr_valid[0] ? 1 : 0,
+            data.fsr_valid[1] ? 1 : 0,
+            data.fsr_valid[2] ? 1 : 0,
+            data.fsr_valid[3] ? 1 : 0
+        );
 
         /* 鈹€鈹€ 浜哄憳灏卞瘽妫€娴嬶紙FSR 鍔涙晱浼犳劅鍣級鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
         if (person_now) {
@@ -890,7 +1028,11 @@ void sensor_request_refresh(void)
 {
     if (!s_sensor_task_handle) return;
     xTaskNotifyGive(s_sensor_task_handle);
-    vTaskDelay(pdMS_TO_TICKS(150));  /* 绛夊緟璇诲彇瀹屾垚 */
+    /* 等待 sensor_task 完成一轮读取后再返回。
+     * sensor_task 每轮末尾会通过 ulTaskNotifyTake 释放，此处等待其重新进入睡眠，
+     * 约等于一轮完整读取时间（通常 < 200ms）。
+     * 注意：这仍是保守估算，不是精确握手；若需精确同步，应改用 EventGroup。 */
+    vTaskDelay(pdMS_TO_TICKS(200));
 }
 
 float sensor_read_pressure_kpa(void)
@@ -918,14 +1060,20 @@ void sensor_get_latest(sensor_data_t *out)
 
 bool sensor_person_just_laid_down(void)
 {
+    /* 原子 read-clear：防止主任务和 sensor_task 并发访问丢失事件 */
+    portENTER_CRITICAL(&s_data_spinlock);
     bool val = s_person_event;
     s_person_event = false;
+    portEXIT_CRITICAL(&s_data_spinlock);
     return val;
 }
 
 bool sensor_person_on_bed(void)
 {
-    return s_person_on_bed;
+    portENTER_CRITICAL(&s_data_spinlock);
+    bool val = s_person_on_bed;
+    portEXIT_CRITICAL(&s_data_spinlock);
+    return val;
 }
 
 static esp_err_t send_ir_frame(const char *name, const uint32_t *signal, size_t pairs)

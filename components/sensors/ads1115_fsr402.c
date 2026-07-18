@@ -14,6 +14,8 @@
 
 static const char *TAG = "ads1115";
 
+#define ADS1115_CONFIG_MODE_CONTINUOUS 0x0000
+
 static esp_err_t ads1115_write_reg(const ads1115_t *dev, uint8_t reg, uint16_t value)
 {
     // ADS1115 寄存器写入格式：寄存器地址 + 16 位数据高字节 + 低字节。
@@ -98,8 +100,12 @@ esp_err_t ads1115_read_raw(const ads1115_t *dev, ads1115_mux_t mux, int16_t *raw
                             TAG, "poll conversion failed");
     } while ((status & ADS1115_CONFIG_OS_READY) == 0 && xTaskGetTickCount() < deadline);
 
-    ESP_RETURN_ON_FALSE((status & ADS1115_CONFIG_OS_READY) != 0,
-                        ESP_ERR_TIMEOUT, TAG, "conversion timeout");
+    if ((status & ADS1115_CONFIG_OS_READY) == 0) {
+        ESP_LOGE(TAG,
+                 "conversion timeout port=%d addr=0x%02x mux=0x%04x cfg_write=0x%04x cfg_read=0x%04x",
+                 dev->i2c_port, dev->address, (unsigned int)mux, config, status);
+        return ESP_ERR_TIMEOUT;
+    }
 
     ESP_RETURN_ON_ERROR(ads1115_read_reg(dev, ADS1115_REG_CONVERSION, &status),
                         TAG, "read conversion failed");
@@ -164,4 +170,74 @@ uint32_t ads1115_conversion_time_ms(ads1115_data_rate_t data_rate)
     default:
         return 8;
     }
+}
+
+esp_err_t ads1115_run_diagnostic(const ads1115_t *dev, ads1115_mux_t mux,
+                                 ads1115_diagnostic_result_t *result)
+{
+    ESP_RETURN_ON_FALSE(dev != NULL && result != NULL, ESP_ERR_INVALID_ARG,
+                        TAG, "diagnostic bad argument");
+
+    for (uint8_t reg = 0; reg < 4; reg++) {
+        ESP_RETURN_ON_ERROR(ads1115_read_reg(dev, reg, &result->registers[reg]),
+                            TAG, "diagnostic register snapshot failed");
+    }
+
+    result->single_config_written = ADS1115_CONFIG_OS_SINGLE |
+                                    (uint16_t)mux |
+                                    (uint16_t)dev->gain |
+                                    ADS1115_CONFIG_MODE_SINGLE |
+                                    (uint16_t)dev->data_rate |
+                                    ADS1115_CONFIG_COMP_DISABLE;
+    ESP_RETURN_ON_ERROR(ads1115_write_reg(dev, ADS1115_REG_CONFIG,
+                                          result->single_config_written),
+                        TAG, "diagnostic single-shot start failed");
+
+    uint32_t single_wait_ms = 0;
+    do {
+        vTaskDelay(pdMS_TO_TICKS(2));
+        single_wait_ms += 2;
+        ESP_RETURN_ON_ERROR(ads1115_read_reg(dev, ADS1115_REG_CONFIG,
+                                             &result->single_config_readback),
+                            TAG, "diagnostic single-shot config readback failed");
+    } while ((result->single_config_readback & ADS1115_CONFIG_OS_READY) == 0 &&
+             single_wait_ms < 100);
+    result->single_wait_ms = single_wait_ms;
+
+    if ((result->single_config_readback & ADS1115_CONFIG_OS_READY) == 0) {
+        ESP_LOGW(TAG, "[diagnostic] single-shot conversion timeout after %lums", (unsigned long)single_wait_ms);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    uint16_t conversion = 0;
+    ESP_RETURN_ON_ERROR(ads1115_read_reg(dev, ADS1115_REG_CONVERSION, &conversion),
+                        TAG, "diagnostic single-shot conversion read failed");
+    result->single_raw = (int16_t)conversion;
+
+    result->continuous_config_written = ADS1115_CONFIG_OS_SINGLE |
+                                        (uint16_t)mux |
+                                        (uint16_t)dev->gain |
+                                        ADS1115_CONFIG_MODE_CONTINUOUS |
+                                        (uint16_t)dev->data_rate |
+                                        ADS1115_CONFIG_COMP_DISABLE;
+    ESP_RETURN_ON_ERROR(ads1115_write_reg(dev, ADS1115_REG_CONFIG,
+                                          result->continuous_config_written),
+                        TAG, "diagnostic continuous start failed");
+
+    vTaskDelay(pdMS_TO_TICKS(50));
+    ESP_RETURN_ON_ERROR(ads1115_read_reg(dev, ADS1115_REG_CONFIG,
+                                         &result->continuous_config_readback),
+                        TAG, "diagnostic continuous config readback failed");
+    ESP_RETURN_ON_ERROR(ads1115_read_reg(dev, ADS1115_REG_CONVERSION, &conversion),
+                        TAG, "diagnostic continuous conversion read failed");
+    result->continuous_raw = (int16_t)conversion;
+
+    const uint16_t restore_config = (uint16_t)mux |
+                                    (uint16_t)dev->gain |
+                                    ADS1115_CONFIG_MODE_SINGLE |
+                                    (uint16_t)dev->data_rate |
+                                    ADS1115_CONFIG_COMP_DISABLE;
+    ESP_RETURN_ON_ERROR(ads1115_write_reg(dev, ADS1115_REG_CONFIG, restore_config),
+                        TAG, "diagnostic restore single-shot mode failed");
+    return ESP_OK;
 }

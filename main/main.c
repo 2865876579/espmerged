@@ -25,6 +25,9 @@
 #include "usart.h"
 #include "snore_detector.h"
 
+/* ★ 安全提示：WiFi 凭证不应硬编码在源码中。
+ *   生产版本请改用 NVS（wifi_manager）或 sdkconfig.defaults 中的 CONFIG_EXAMPLE_WIFI_SSID。
+ *   当前仅供开发调试使用。 */
 #define WIFI_SSID  "qwe"
 #define WIFI_PASS  "12345678"
 #define WS_URI     "ws://39.106.190.124:8000/ws/esp32"
@@ -61,10 +64,6 @@ static TaskHandle_t s_opus_upload_task = NULL;
 static char s_ai_persona[12] = "PRO";
 static volatile float s_tjc_saved_pressure_kpa = -1.0f;
 static uint32_t s_wake_request_id = 0;
-
-// 借鉴 xiaozhi：保护 AFE capture 状态的 spinlock，防止 fetch 任务
-// 和主循环同时访问 capture buffer 造成 use-after-free
-static portMUX_TYPE __attribute__((unused)) s_capture_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
 typedef enum {
     RECORD_SENT,
@@ -764,11 +763,8 @@ void app_main(void)
         ESP_LOGE(TAG, "Opus task init failed");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
-    esp_err_t tjc_err = usart_init();
-    if (tjc_err != ESP_OK) {
-        ESP_LOGW(TAG, "early TJC-USART init failed: %s", esp_err_to_name(tjc_err));
-    }
-
+    /* TJC-USART 统一由 init_sensors() 内部初始化（ENABLE_TJC_USART=1 时），
+     * 此处不重复调用，避免二次 uart_driver_install 报 ESP_ERR_INVALID_STATE。 */
     audio_out_init();
     pump_driver_init();
     esp_err_t led_err = led_strip_driver_init();
