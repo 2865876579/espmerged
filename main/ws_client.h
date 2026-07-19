@@ -31,14 +31,19 @@ bool ws_client_send_binary(const uint8_t *data, int len);
 bool ws_client_is_connected(void);
 uint32_t ws_client_disconnected_ms(void);
 bool ws_client_is_tts_active(void);
+bool ws_client_is_music_active(void);
+bool ws_client_consume_music_barge_result(bool *stop);
 bool ws_client_is_tts_guard_active(void);
 bool ws_client_consume_wake_ack(uint32_t wake_id);
 void ws_client_clear_events(void);
 bool ws_client_consume_turn_done(void);
 bool ws_client_consume_dialog_end(void);
+bool ws_client_consume_tts_playback_done(void);
 bool ws_client_consume_listen_once_request(void);
 bool ws_client_has_listen_once_request(void);
 bool ws_client_request_pillow_tilt_to_kpa(float target_kpa, const char *source);
+bool ws_client_request_pillow_recover_to_kpa(float target_kpa, const char *source);
+bool ws_client_request_pillow_command(const char *action, bool continuous);
 
 #ifdef __cplusplus
 }

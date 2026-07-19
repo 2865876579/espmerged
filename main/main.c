@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "driver/uart.h"
 #include "esp_err.h"
 #include "wifi.h"
@@ -40,6 +41,7 @@
 #define OPUS_UPLOAD_PRIORITY 3
 #define OPUS_UPLOAD_OK 1
 #define OPUS_UPLOAD_FAILED 2
+#define OPUS_STREAM_RESTART_DELAY_MS 250
 #define REC_MAX_DURATION_MS 6000
 
 #define WAKE_TRIGGER_TEXT "__wake__"
@@ -78,15 +80,36 @@ typedef enum {
     TURN_WS_LOST,
 } turn_wait_result_t;
 
+typedef enum {
+    OPUS_UPLOAD_BUFFERED = 0,
+    OPUS_UPLOAD_STREAM_START,
+    OPUS_UPLOAD_STREAM_FRAME,
+    OPUS_UPLOAD_STREAM_STOP,
+    OPUS_UPLOAD_STREAM_ABORT,
+} opus_upload_command_t;
+
 typedef struct {
+    opus_upload_command_t command;
+    bool music_barge_in;
     int16_t *pcm;
     int trim_start;
     int trim_samples;
     int ac_avg;
     int peak;
     int active;
+    int samples;
+    int *result;
     TaskHandle_t waiter;
 } opus_upload_job_t;
+
+static void send_pending_tts_playback_ack(void)
+{
+    if (ws_client_consume_tts_playback_done()) {
+        ws_client_send_raw("{\"type\":\"tts_playback_done\"}");
+    }
+}
+
+static record_result_t record_and_send(bool music_barge_in);
 
 static bool wait_for_ws_connected(int timeout_ms)
 {
@@ -103,9 +126,11 @@ static bool wait_for_ws_connected(int timeout_ms)
 
 static turn_wait_result_t wait_for_turn_result(int timeout_ms)
 {
-    int waited = 0;
-    int last_ping = -1000;  // 负值确保首发立即 ping
-    while (waited < timeout_ms) {
+    int idle_waited_ms = 0;
+    int elapsed_ms = 0;
+    int last_ping_ms = -2000;
+    while (idle_waited_ms < timeout_ms) {
+        send_pending_tts_playback_ack();
         if (ws_client_consume_dialog_end()) {
             return TURN_DIALOG_END;
         }
@@ -115,19 +140,53 @@ static turn_wait_result_t wait_for_turn_result(int timeout_ms)
             }
             return TURN_DONE;
         }
-        if (ws_client_is_tts_active()) {
-            waited = 0;  // ★ TTS 还在播，超时不倒计时
-        }
         if (!ws_client_is_connected()) {
             return TURN_WS_LOST;
         }
-        // ★ 借鉴 xiaozhi：每 2 秒发应用层 ping，强制 WebSocket 有数据流，防云 SLB 杀连接
-        if (waited - last_ping >= 1000) {
+
+        if (ws_client_is_music_active()) {
+            record_result_t barge = record_and_send(true);
+            if (barge == RECORD_FAILED && !ws_client_is_connected()) {
+                return TURN_WS_LOST;
+            }
+            if (barge == RECORD_SENT) {
+                int result_waited_ms = 0;
+                while (result_waited_ms < 8000 && ws_client_is_connected()) {
+                    bool stop = false;
+                    if (ws_client_consume_music_barge_result(&stop)) {
+                        if (stop) {
+                            send_pending_tts_playback_ack();
+                            return TURN_DONE;
+                        }
+                        break;
+                    }
+                    if (!ws_client_is_music_active()) {
+                        break;
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    result_waited_ms += 100;
+                }
+            } else if (barge == RECORD_FAILED) {
+                vTaskDelay(pdMS_TO_TICKS(200));
+            }
+            continue;
+        }
+
+        bool tts_active = ws_client_is_tts_active();
+        if (tts_active) {
+            idle_waited_ms = 0;
+        }
+        // Keep a monotonic clock for keepalive; resetting the reply timeout
+        // while TTS plays must not stop application-level pings.
+        if (elapsed_ms - last_ping_ms >= 2000) {
             ws_client_send_raw("{\"type\":\"ping\"}");
-            last_ping = waited;
+            last_ping_ms = elapsed_ms;
         }
         vTaskDelay(pdMS_TO_TICKS(100));
-        waited += 100;
+        elapsed_ms += 100;
+        if (!tts_active) {
+            idle_waited_ms += 100;
+        }
     }
     return TURN_TIMEOUT;
 }
@@ -175,27 +234,56 @@ static bool pcm_has_speech(const int16_t *pcm, int samples,
         || (peak >= SPEECH_PEAK_THRESHOLD && active >= SPEECH_ACTIVE_MIN_SAMPLES);
 }
 
+static OpusEncoder *create_opus_encoder(void)
+{
+    int opus_err = OPUS_OK;
+    OpusEncoder *encoder = opus_encoder_create(
+        SAMPLE_RATE, 1, OPUS_APPLICATION_VOIP, &opus_err);
+    if (!encoder || opus_err != OPUS_OK) {
+        ESP_LOGE(TAG, "opus encoder create failed: %d", opus_err);
+        if (encoder) {
+            opus_encoder_destroy(encoder);
+        }
+        return NULL;
+    }
+    int ctl_err = opus_encoder_ctl(encoder, OPUS_SET_BITRATE(24000));
+    if (ctl_err == OPUS_OK) {
+        ctl_err = opus_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(0));
+    }
+    if (ctl_err == OPUS_OK) {
+        ctl_err = opus_encoder_ctl(encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+    }
+    if (ctl_err == OPUS_OK) {
+        ctl_err = opus_encoder_ctl(encoder, OPUS_SET_VBR(1));
+    }
+    if (ctl_err == OPUS_OK) {
+        ctl_err = opus_encoder_ctl(encoder, OPUS_SET_DTX(0));
+    }
+    if (ctl_err != OPUS_OK) {
+        ESP_LOGE(TAG, "opus encoder configure failed: %d", ctl_err);
+        opus_encoder_destroy(encoder);
+        return NULL;
+    }
+    return encoder;
+}
+
 static bool send_opus_upload(const opus_upload_job_t *job)
 {
     const int16_t *send_pcm = job->pcm + job->trim_start;
 
-    int opus_err = OPUS_OK;
-    OpusEncoder *encoder = opus_encoder_create(SAMPLE_RATE, 1, OPUS_APPLICATION_VOIP, &opus_err);
-    if (!encoder || opus_err != OPUS_OK) {
-        ESP_LOGE(TAG, "opus encoder create failed: %d", opus_err);
+    OpusEncoder *encoder = create_opus_encoder();
+    if (!encoder) {
         return false;
     }
-    opus_encoder_ctl(encoder, OPUS_SET_BITRATE(24000));
-    opus_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(0));
-    opus_encoder_ctl(encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
-    opus_encoder_ctl(encoder, OPUS_SET_VBR(1));
-    opus_encoder_ctl(encoder, OPUS_SET_DTX(0));  // ★ xiaozhi: 关 DTX，避免吞开头
-
     // ★ 借鉴 xiaozhi：先发 start，让服务器进入实时音频处理模式
-    const char *start_json = "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"auto\"}";
+    const char *start_json = job->music_barge_in
+        ? "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"music_barge_in\"}"
+        : "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"auto\"}";
     bool sent = ws_client_send_raw(start_json);
     if (!sent) {
         ESP_LOGE(TAG, "listen start send failed");
+        opus_encoder_destroy(encoder);
+        return false;
     }
 
     uint8_t opus_packet[OPUS_MAX_PACKET_BYTES];
@@ -206,6 +294,7 @@ static bool send_opus_upload(const opus_upload_job_t *job)
     }
     if (!pad_frame) {
         ESP_LOGE(TAG, "opus pad frame alloc failed");
+        ws_client_send_raw("{\"type\":\"abort\",\"reason\":\"opus_alloc_failed\"}");
         opus_encoder_destroy(encoder);
         return false;
     }
@@ -249,20 +338,177 @@ static bool send_opus_upload(const opus_upload_job_t *job)
             ESP_LOGE(TAG, "listen stop send failed");
         }
     }
+    if (!sent) {
+        ws_client_send_raw("{\"type\":\"abort\",\"reason\":\"buffered_upload_failed\"}");
+    }
 
     free(pad_frame);
     opus_encoder_destroy(encoder);
 
     if (chunks > 0) {
-        ESP_LOGI(TAG, "audio sent: %d frames, %d bytes", chunks, opus_bytes);
+        printf("audio sent: %d frames, %d bytes\n", chunks, opus_bytes);
     }
     return sent;
+}
+
+static bool submit_opus_job(opus_upload_job_t *job)
+{
+    if (!job || !s_opus_upload_queue) {
+        return false;
+    }
+    uint32_t notify_value = 0;
+    xTaskNotifyWait(0, UINT32_MAX, &notify_value, 0);
+    job->waiter = xTaskGetCurrentTaskHandle();
+    if (xQueueSend(s_opus_upload_queue, job, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        return false;
+    }
+    if (xTaskNotifyWait(0, UINT32_MAX, &notify_value, portMAX_DELAY) != pdTRUE) {
+        return false;
+    }
+    return notify_value == OPUS_UPLOAD_OK;
+}
+
+typedef struct {
+    int16_t frame[OPUS_FRAME_SAMPLES];
+    int frame_samples;
+    int sample_offset;
+    int chunks;
+    int opus_bytes;
+    int64_t first_frame_us;
+    bool started;
+} live_opus_upload_t;
+
+static void live_opus_close(live_opus_upload_t *upload)
+{
+    upload->started = false;
+}
+
+static bool live_opus_start(live_opus_upload_t *upload, bool music_barge_in)
+{
+    opus_upload_job_t job = {
+        .command = OPUS_UPLOAD_STREAM_START,
+        .music_barge_in = music_barge_in,
+    };
+    if (!submit_opus_job(&job)) {
+        return false;
+    }
+    upload->started = true;
+    return true;
+}
+
+static bool live_opus_send_frame(live_opus_upload_t *upload)
+{
+    int encoded = 0;
+    opus_upload_job_t job = {
+        .command = OPUS_UPLOAD_STREAM_FRAME,
+        .pcm = upload->frame,
+        .samples = OPUS_FRAME_SAMPLES,
+        .result = &encoded,
+    };
+    if (!submit_opus_job(&job) || encoded <= 0) {
+        ESP_LOGE(TAG, "live opus send failed: chunk=%d", upload->chunks + 1);
+        return false;
+    }
+    if (upload->first_frame_us == 0) {
+        upload->first_frame_us = esp_timer_get_time();
+    }
+    upload->chunks++;
+    upload->opus_bytes += encoded;
+    upload->frame_samples = 0;
+    return true;
+}
+
+static bool live_opus_feed(live_opus_upload_t *upload,
+                           const int16_t *samples,
+                           int sample_count)
+{
+    while (sample_count > 0) {
+        int room = OPUS_FRAME_SAMPLES - upload->frame_samples;
+        int copy = sample_count < room ? sample_count : room;
+        memcpy(upload->frame + upload->frame_samples,
+               samples,
+               (size_t)copy * sizeof(*samples));
+        upload->frame_samples += copy;
+        samples += copy;
+        sample_count -= copy;
+        if (upload->frame_samples == OPUS_FRAME_SAMPLES &&
+            !live_opus_send_frame(upload)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool live_opus_drain_capture(live_opus_upload_t *upload)
+{
+    while (true) {
+        int room = OPUS_FRAME_SAMPLES - upload->frame_samples;
+        int copied = afe_capture_read_from(upload->sample_offset,
+                                           upload->frame + upload->frame_samples,
+                                           room);
+        if (copied <= 0) {
+            return true;
+        }
+        upload->sample_offset += copied;
+        upload->frame_samples += copied;
+        if (upload->frame_samples == OPUS_FRAME_SAMPLES &&
+            !live_opus_send_frame(upload)) {
+            return false;
+        }
+    }
+}
+
+static void live_opus_abort(live_opus_upload_t *upload)
+{
+    if (upload->started) {
+        opus_upload_job_t job = {
+            .command = OPUS_UPLOAD_STREAM_ABORT,
+        };
+        submit_opus_job(&job);
+    }
+    live_opus_close(upload);
+}
+
+static bool live_opus_finish(live_opus_upload_t *upload,
+                             const int16_t *pcm,
+                             int samples)
+{
+    if (upload->sample_offset > samples) {
+        ESP_LOGE(TAG, "live opus offset invalid: %d > %d",
+                 upload->sample_offset, samples);
+        return false;
+    }
+    if (!live_opus_feed(upload,
+                        pcm + upload->sample_offset,
+                        samples - upload->sample_offset)) {
+        return false;
+    }
+    upload->sample_offset = samples;
+    if (upload->frame_samples > 0) {
+        memset(upload->frame + upload->frame_samples,
+               0,
+               (size_t)(OPUS_FRAME_SAMPLES - upload->frame_samples) *
+                   sizeof(upload->frame[0]));
+        upload->frame_samples = OPUS_FRAME_SAMPLES;
+        if (!live_opus_send_frame(upload)) {
+            return false;
+        }
+    }
+
+    opus_upload_job_t job = {
+        .command = OPUS_UPLOAD_STREAM_STOP,
+    };
+    return submit_opus_job(&job);
 }
 
 static void opus_upload_task(void *arg)
 {
     (void)arg;
     opus_upload_job_t job;
+    OpusEncoder *stream_encoder = NULL;
+    uint8_t stream_packet[OPUS_MAX_PACKET_BYTES];
+    int stream_chunks = 0;
+    int stream_bytes = 0;
 
     while (1) {
         if (xQueueReceive(s_opus_upload_queue, &job, portMAX_DELAY) != pdTRUE) {
@@ -270,10 +516,81 @@ static void opus_upload_task(void *arg)
         }
 
         bool sent = false;
-        if (job.pcm && ws_client_is_connected()) {
-            sent = send_opus_upload(&job);
+        if (job.result) {
+            *job.result = 0;
         }
-        free(job.pcm);
+        if (job.command == OPUS_UPLOAD_BUFFERED) {
+            if (stream_encoder) {
+                ws_client_send_raw(
+                    "{\"type\":\"abort\",\"reason\":\"buffered_restart\"}");
+                opus_encoder_destroy(stream_encoder);
+                stream_encoder = NULL;
+            }
+            if (job.pcm && ws_client_is_connected()) {
+                sent = send_opus_upload(&job);
+            }
+            free(job.pcm);
+        } else if (job.command == OPUS_UPLOAD_STREAM_START) {
+            if (stream_encoder) {
+                ws_client_send_raw(
+                    "{\"type\":\"abort\",\"reason\":\"stream_restart\"}");
+                opus_encoder_destroy(stream_encoder);
+                stream_encoder = NULL;
+            }
+            stream_chunks = 0;
+            stream_bytes = 0;
+            if (ws_client_is_connected()) {
+                stream_encoder = create_opus_encoder();
+                const char *start_json = job.music_barge_in
+                    ? "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"music_barge_in\"}"
+                    : "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"auto\"}";
+                sent = stream_encoder && ws_client_send_raw(start_json);
+                if (!sent && stream_encoder) {
+                    opus_encoder_destroy(stream_encoder);
+                    stream_encoder = NULL;
+                }
+            }
+        } else if (job.command == OPUS_UPLOAD_STREAM_FRAME) {
+            int encoded = 0;
+            if (stream_encoder && job.pcm &&
+                job.samples == OPUS_FRAME_SAMPLES &&
+                ws_client_is_connected()) {
+                encoded = opus_encode(stream_encoder,
+                                      job.pcm,
+                                      OPUS_FRAME_SAMPLES,
+                                      stream_packet,
+                                      sizeof(stream_packet));
+                sent = encoded > 0 &&
+                       ws_client_send_binary(stream_packet, encoded);
+                if (sent) {
+                    stream_chunks++;
+                    stream_bytes += encoded;
+                    if (job.result) {
+                        *job.result = encoded;
+                    }
+                }
+            }
+        } else if (job.command == OPUS_UPLOAD_STREAM_STOP) {
+            if (stream_encoder) {
+                char end_json[96];
+                snprintf(end_json, sizeof(end_json),
+                         "{\"type\":\"listen\",\"state\":\"stop\","
+                         "\"chunks\":%d,\"bytes\":%d}",
+                         stream_chunks, stream_bytes);
+                sent = ws_client_send_raw(end_json);
+                opus_encoder_destroy(stream_encoder);
+                stream_encoder = NULL;
+            }
+        } else if (job.command == OPUS_UPLOAD_STREAM_ABORT) {
+            sent = ws_client_send_raw(
+                "{\"type\":\"abort\",\"reason\":\"audio_stream_failed\"}");
+            if (stream_encoder) {
+                opus_encoder_destroy(stream_encoder);
+                stream_encoder = NULL;
+            }
+            stream_chunks = 0;
+            stream_bytes = 0;
+        }
         if (job.waiter) {
             xTaskNotify(job.waiter, sent ? OPUS_UPLOAD_OK : OPUS_UPLOAD_FAILED, eSetValueWithOverwrite);
         }
@@ -373,21 +690,45 @@ static void notify_ai_persona_changed(void)
     }
 }
 
-static record_result_t record_and_send(void)
+static record_result_t record_and_send(bool music_barge_in)
 {
     int total = SAMPLE_RATE * REC_MAX_DURATION_MS / 1000;
     int waited_ms = 0;
+    int64_t capture_started_us = esp_timer_get_time();
+    live_opus_upload_t live = {0};
+    bool live_disabled = false;
+    bool live_aborted = false;
     int last_keepalive_ms = -1000;  // 首发立即 ping
 
     afe_capture_start(total);
     while (!afe_capture_is_done()) {
         vTaskDelay(pdMS_TO_TICKS(50));
         waited_ms += 50;
+        if (!live.started && !live_disabled &&
+            afe_capture_seen_speech() && ws_client_is_connected()) {
+            if (live_opus_start(&live, music_barge_in)) {
+                printf("audio stream started: capture=%lldms\n",
+                       (long long)((esp_timer_get_time() - capture_started_us) / 1000));
+            } else {
+                live_disabled = true;
+            }
+        }
+        if (live.started && !live_opus_drain_capture(&live)) {
+            live_opus_abort(&live);
+            live_disabled = true;
+            live_aborted = true;
+        }
         // ★ 录音期间每 2 秒发 ping，防止云 SLB 杀空闲连接
         if (waited_ms - last_keepalive_ms >= 2000) {
             ws_client_send_raw("{\"type\":\"ping\"}");
             last_keepalive_ms = waited_ms;
         }
+    }
+
+    if (live.started && !live_opus_drain_capture(&live)) {
+        live_opus_abort(&live);
+        live_disabled = true;
+        live_aborted = true;
     }
 
     bool vad_had_speech = afe_capture_had_speech();
@@ -396,6 +737,7 @@ static record_result_t record_and_send(void)
 
     if (!pcm || samples < SAMPLE_RATE / 5) {  // 200ms 门槛，短句子也能录
         ESP_LOGW(TAG, "Record too short, skip");
+        live_opus_abort(&live);
         free(pcm);
         return RECORD_FAILED;
     }
@@ -404,16 +746,40 @@ static record_result_t record_and_send(void)
     int peak = 0;
     int active = 0;
     bool has_energy = pcm_has_speech(pcm, samples, &ac_avg, &peak, &active);
-    ESP_LOGI(TAG, "record stats: ms=%d vad=%d energy=%d ac=%d peak=%d active=%d",
-             samples * 1000 / SAMPLE_RATE,
-             vad_had_speech ? 1 : 0,
-             has_energy ? 1 : 0,
-             ac_avg,
-             peak,
-             active);
+    printf("record stats: ms=%d vad=%d energy=%d ac=%d peak=%d active=%d\n",
+           samples * 1000 / SAMPLE_RATE,
+           vad_had_speech ? 1 : 0,
+           has_energy ? 1 : 0,
+           ac_avg,
+           peak,
+           active);
     if (!vad_had_speech && !has_energy) {
+        live_opus_abort(&live);
         free(pcm);
         return RECORD_NO_SPEECH;
+    }
+
+    if (live.started) {
+        if (live_opus_finish(&live, pcm, samples)) {
+            int64_t now_us = esp_timer_get_time();
+            int64_t first_ms = live.first_frame_us > 0
+                ? (live.first_frame_us - capture_started_us) / 1000
+                : -1;
+            printf("audio streamed: frames=%d bytes=%d first=%lldms total=%lldms\n",
+                   live.chunks,
+                   live.opus_bytes,
+                   (long long)first_ms,
+                   (long long)((now_us - capture_started_us) / 1000));
+            live_opus_close(&live);
+            free(pcm);
+            return RECORD_SENT;
+        }
+        live_opus_abort(&live);
+        live_aborted = true;
+    }
+
+    if (live_aborted) {
+        vTaskDelay(pdMS_TO_TICKS(OPUS_STREAM_RESTART_DELAY_MS));
     }
 
     if (!s_opus_upload_queue) {
@@ -427,6 +793,8 @@ static record_result_t record_and_send(void)
     xTaskNotifyWait(0, UINT32_MAX, &notify_value, 0);
 
     opus_upload_job_t job = {
+        .command = OPUS_UPLOAD_BUFFERED,
+        .music_barge_in = music_barge_in,
         .pcm = pcm,
         .trim_start = 0,
         .trim_samples = samples,
@@ -447,20 +815,46 @@ static record_result_t record_and_send(void)
         return RECORD_FAILED;
     }
 
-    return notify_value == OPUS_UPLOAD_OK ? RECORD_SENT : RECORD_FAILED;
+    bool sent = notify_value == OPUS_UPLOAD_OK;
+    printf("audio buffered fallback: sent=%d total=%lldms\n",
+           sent ? 1 : 0,
+           (long long)((esp_timer_get_time() - capture_started_us) / 1000));
+    return sent ? RECORD_SENT : RECORD_FAILED;
 }
 
 static void run_sleep_greeting(void)
 {
-    if (!wait_for_ws_connected(WS_READY_TIMEOUT_MS)) return;
-
-    ws_client_clear_events();
     printf("\n[就寝] 检测到躺下 → 主动问候\n");
-    send_text_with_persona("用户刚刚躺下了，请温柔地主动问候一句");
 
-    turn_wait_result_t result = wait_for_turn_result(TURN_REPLY_TIMEOUT_MS);
-    (void)result;
-    // TTS 播完，回到正常唤醒模式
+    for (int attempt = 1; attempt <= WAKE_REPLY_RETRY_COUNT; attempt++) {
+        if (!wait_for_ws_connected(WS_READY_TIMEOUT_MS)) {
+            ESP_LOGW(TAG, "sleep greeting: websocket unavailable attempt=%d/%d",
+                     attempt, WAKE_REPLY_RETRY_COUNT);
+            continue;
+        }
+
+        ws_client_clear_events();
+        if (!send_text_with_persona("用户刚刚躺下了，请温柔地主动问候一句")) {
+            ESP_LOGW(TAG, "sleep greeting: send failed attempt=%d/%d",
+                     attempt, WAKE_REPLY_RETRY_COUNT);
+            vTaskDelay(pdMS_TO_TICKS(200));
+            continue;
+        }
+
+        turn_wait_result_t result = wait_for_turn_result(TURN_REPLY_TIMEOUT_MS);
+        if (result == TURN_DONE || result == TURN_DIALOG_END) {
+            return;
+        }
+        if (result != TURN_WS_LOST) {
+            ESP_LOGW(TAG, "sleep greeting: incomplete result=%d", result);
+            return;
+        }
+        ESP_LOGW(TAG, "sleep greeting: connection lost attempt=%d/%d",
+                 attempt, WAKE_REPLY_RETRY_COUNT);
+    }
+
+    ESP_LOGW(TAG, "sleep greeting: failed after %d attempts",
+             WAKE_REPLY_RETRY_COUNT);
 }
 
 static void run_one_shot_reply(void)
@@ -478,7 +872,7 @@ static void run_one_shot_reply(void)
     ws_client_clear_events();
     printf("\n[一次回答] 主动询问后录音\n");
 
-    record_result_t rec = record_and_send();
+    record_result_t rec = record_and_send(false);
     if (rec == RECORD_SENT) {
         turn_wait_result_t result = wait_for_turn_result(TURN_REPLY_TIMEOUT_MS);
         (void)result;
@@ -577,7 +971,7 @@ static void run_dialog(void)
         }
 
         ws_client_clear_events();
-        record_result_t rec = record_and_send();
+        record_result_t rec = record_and_send(false);
         if (rec == RECORD_NO_SPEECH) {
             vTaskDelay(pdMS_TO_TICKS(NO_SPEECH_DELAY_MS));
             continue;
@@ -606,10 +1000,10 @@ static void on_wake_word(void)
 {
     bool tts_guard = ws_client_is_tts_guard_active();
     bool listen_once = ws_client_has_listen_once_request();
-    ESP_LOGI(TAG, "wake callback: active=%d guard=%d listen_once=%d",
-             s_dialog_active ? 1 : 0,
-             tts_guard ? 1 : 0,
-             listen_once ? 1 : 0);
+    printf("wake callback: active=%d guard=%d listen_once=%d\n",
+           s_dialog_active ? 1 : 0,
+           tts_guard ? 1 : 0,
+           listen_once ? 1 : 0);
 
     if (!s_dialog_active && !tts_guard) {
         s_wake_event = true;
@@ -626,40 +1020,41 @@ static void handle_tjc_command(const char *cmd)
         strcmp(cmd, "PILLOW_UP_START") == 0 ||
         strcmp(cmd, "PUMP_UP") == 0) {
         pump_clear_cooldown();
-        if (!pump_start()) {
+        if (!ws_client_request_pillow_command("tilt", true)) {
             ESP_LOGW(TAG, "TJC pump up start rejected");
         }
         return;
     }
 
     if (strcmp(cmd, "PILLOW_CAL_UP_STOP") == 0) {
-        pump_stop();
+        ws_client_request_pillow_command("halt", false);
         return;
     }
 
     if (strcmp(cmd, "PILLOW_STOP") == 0 ||
         strcmp(cmd, "PUMP_STOP") == 0) {
-        pump_stop();
-        valve_close();
+        ws_client_request_pillow_command("stop", false);
         return;
     }
 
     if (strcmp(cmd, "PILLOW_CAL_DOWN_START") == 0 ||
         strcmp(cmd, "PILLOW_DOWN_START") == 0 ||
         strcmp(cmd, "PUMP_DOWN") == 0) {
-        valve_open();
+        if (!ws_client_request_pillow_command("recover", true)) {
+            ESP_LOGW(TAG, "TJC pump down start rejected");
+        }
         return;
     }
 
     if (strcmp(cmd, "PILLOW_CAL_DOWN_STOP") == 0) {
-        valve_close();
+        ws_client_request_pillow_command("halt", false);
         return;
     }
 
     if (strcmp(cmd, "PILLOW_CAL_SAVE") == 0 ||
         strcmp(cmd, "PUMP_COMFORT") == 0) {
-        pump_stop();
-        valve_close();
+        ws_client_request_pillow_command("halt", false);
+        vTaskDelay(pdMS_TO_TICKS(100));
         s_tjc_saved_pressure_kpa = sensor_read_pressure_kpa();
         ESP_LOGI(TAG, "TJC pillow calibration saved: %.2f kPa",
                  (double)s_tjc_saved_pressure_kpa);
@@ -678,8 +1073,8 @@ static void handle_tjc_command(const char *cmd)
 
     if (strcmp(cmd, "PILLOW_HALT") == 0 ||
         strcmp(cmd, "PUMP_RELEASE") == 0) {
-        pump_stop();
-        emergency_release();
+        ws_client_request_pillow_command(
+            strcmp(cmd, "PUMP_RELEASE") == 0 ? "stop" : "halt", false);
         return;
     }
 
@@ -759,6 +1154,9 @@ void app_main(void)
              (int)reset_reason,
              (unsigned)esp_get_free_heap_size(),
              (unsigned)esp_get_minimum_free_heap_size());
+    // Keep normal console output focused on sensors, wake/dialog, and snore.
+    // Warnings and errors remain visible for field diagnostics.
+    esp_log_level_set("*", ESP_LOG_WARN);
     if (!start_opus_upload_task()) {
         ESP_LOGE(TAG, "Opus task init failed");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
@@ -816,6 +1214,7 @@ void app_main(void)
     uint8_t rx_buf[128];
 #endif
     while (1) {
+        send_pending_tts_playback_ack();
         bool tts_guard = ws_client_is_tts_guard_active();
         if (tts_guard) {
             s_wake_event = false;

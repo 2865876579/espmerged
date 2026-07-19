@@ -128,7 +128,7 @@ esp_err_t usart_init(void)
     }
 
     err = uart_driver_install(USART_TJC_UART_NUM, USART_TJC_BUF_SIZE, 0, 0, NULL,
-                              ESP_INTR_FLAG_SHARED);
+                              ESP_INTR_FLAG_SHARED | ESP_INTR_FLAG_LOWMED);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         return err;
     }

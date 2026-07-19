@@ -10,6 +10,8 @@
 #include "model_path.h"
 #include "driver/i2s_std.h"
 #include "esp_heap_caps.h"
+#include <math.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -36,7 +38,7 @@ static portMUX_TYPE s_capture_lock = portMUX_INITIALIZER_UNLOCKED;
 
 #define CAPTURE_SAMPLE_RATE          16000
 #define CAPTURE_NO_SPEECH_MS         5000
-#define CAPTURE_END_SILENCE_MS       1200
+#define CAPTURE_END_SILENCE_MS       800
 #define CAPTURE_MIN_VAD_SPEECH_MS    240
 #define CAPTURE_AC_AVG_THRESHOLD     350
 #define CAPTURE_PEAK_THRESHOLD       2500
@@ -60,6 +62,7 @@ static i2s_chan_handle_t s_rx_chan = NULL;
 // Keep twice the inference window so a lock-free snapshot cannot be
 // overwritten while the snore task copies the latest two seconds.
 #define AFE_RECENT_PCM_RING_SAMPLES 65536
+#define SNORE_PREEMPHASIS_ALPHA 0.3f
 static int16_t *s_recent_pcm_ring = NULL;
 static volatile uint32_t s_recent_pcm_total = 0;
 static portMUX_TYPE s_recent_pcm_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -68,6 +71,17 @@ static portMUX_TYPE s_recent_pcm_lock = portMUX_INITIALIZER_UNLOCKED;
 static int s_feed_chunksize  = 0;
 static int s_feed_channels   = 0;
 static int s_fetch_chunksize = 0;
+static bool s_feed_task_with_caps = false;
+static bool s_fetch_task_with_caps = false;
+
+static void delete_current_task(bool with_caps)
+{
+    if (with_caps) {
+        vTaskDeleteWithCaps(NULL);
+    } else {
+        vTaskDelete(NULL);
+    }
+}
 
 static void recent_pcm_write(const int16_t *pcm, int samples)
 {
@@ -184,7 +198,7 @@ static void afe_feed_task(void *arg)
                                           MALLOC_CAP_SPIRAM);
     if (!feed_buf) {
         ESP_LOGE(TAG, "feed malloc failed");
-        vTaskDelete(NULL);
+        delete_current_task(s_feed_task_with_caps);
         return;
     }
 
@@ -197,7 +211,7 @@ static void afe_feed_task(void *arg)
         if (!ref_buf) {
             ESP_LOGE(TAG, "ref_buf malloc failed");
             free(feed_buf);
-            vTaskDelete(NULL);
+            delete_current_task(s_feed_task_with_caps);
             return;
         }
     }
@@ -223,10 +237,11 @@ static void afe_feed_task(void *arg)
         ESP_LOGE(TAG, "acc malloc failed");
         free(snore_mono_buf);
         free(feed_buf);
-        vTaskDelete(NULL);
+        delete_current_task(s_feed_task_with_caps);
         return;
     }
     int acc_samples = 0;
+    int16_t snore_previous_sample = 0;
 
     TickType_t last_wake = xTaskGetTickCount();
     const TickType_t period = pdMS_TO_TICKS(interval_ms);
@@ -258,7 +273,12 @@ static void afe_feed_task(void *arg)
                 int16_t mic = (int16_t)(acc[i * 2] >> 16);
                 feed_buf[i * ch] = mic;
                 if (snore_mono_buf) {
-                    snore_mono_buf[i] = mic;
+                    float filtered = (float)mic -
+                                     SNORE_PREEMPHASIS_ALPHA * (float)snore_previous_sample;
+                    snore_previous_sample = mic;
+                    if (filtered > INT16_MAX) filtered = INT16_MAX;
+                    if (filtered < INT16_MIN) filtered = INT16_MIN;
+                    snore_mono_buf[i] = (int16_t)lrintf(filtered);
                 }
                 if (ch >= 2) {
                     feed_buf[i * ch + 1] = ref_buf[i];  // 参考 = 喇叭输出
@@ -311,33 +331,39 @@ static void afe_fetch_task(void *arg)
         // 唤醒词检测
         if (res->wakeup_state == WAKENET_DETECTED
             && s_cooldown == 0) {
-            ESP_LOGI(TAG, "*** WAKE WORD DETECTED! ***");
+            printf("*** WAKE WORD DETECTED! ***\n");
             s_cooldown = COOLDOWN_TICKS;
             // ★ 不 disable wakenet — 否则音频通路关闭，采集不到数据
             if (s_wake_cb) s_wake_cb();
         }
 
         // 录音采集: 从 AFE 降噪输出中拷贝，优先用 AFE VAD 做端点检测。
-        // ★ 借鉴 xiaozhi：临界区保护 buffer 访问，防止主循环 free 时还在写
+        // 保持 memcpy 和索引更新在同一临界区内，避免 finish/start 释放缓冲区。
         portENTER_CRITICAL(&s_capture_lock);
         bool capturing = (s_capture_buf != NULL && !s_capture_done
                           && s_capture_idx < s_capture_max && res->data != NULL);
-        int16_t *buf_ptr = s_capture_buf;
+        int16_t *capture_buf_ptr = s_capture_buf;
         int cur_idx = s_capture_idx;
         int cur_max = s_capture_max;
-        portEXIT_CRITICAL(&s_capture_lock);
-
+        int to_copy = 0;
         if (capturing) {
             int fetch_samples = res->data_size / (int)sizeof(int16_t);
             int remain = cur_max - cur_idx;
-            int to_copy = (fetch_samples < remain) ? fetch_samples : remain;
-            int copy_start = cur_idx;
-            memcpy(buf_ptr + cur_idx, res->data, to_copy * sizeof(int16_t));
-            // safe: only fetch task writes s_capture_idx forward
+            to_copy = (fetch_samples < remain) ? fetch_samples : remain;
+            memcpy(s_capture_buf + cur_idx, res->data, to_copy * sizeof(int16_t));
             s_capture_idx = cur_idx + to_copy;
+        }
+        portEXIT_CRITICAL(&s_capture_lock);
+
+        if (capturing && to_copy > 0) {
+            bool energy_speech = capture_chunk_has_voice(res->data, to_copy);
 
             bool vad_speech = (res->vad_state == VAD_SPEECH);
-            bool energy_speech = capture_chunk_has_voice(buf_ptr + copy_start, to_copy);
+            portENTER_CRITICAL(&s_capture_lock);
+            if (s_capture_buf != capture_buf_ptr) {
+                portEXIT_CRITICAL(&s_capture_lock);
+                continue;
+            }
             if (vad_speech) {
                 s_capture_seen_speech = true;
                 s_capture_vad_speech_samples += to_copy;
@@ -361,6 +387,7 @@ static void afe_fetch_task(void *arg)
                        (s_capture_idx - s_capture_last_voice_idx) >= end_silence_limit) {
                 s_capture_done = true;
             }
+            portEXIT_CRITICAL(&s_capture_lock);
         }
     }
 }
@@ -485,6 +512,7 @@ int afe_wake_word_init(wake_word_callback_t cb)
 
     // Start fetch before feed so AFE has a reader before microphone frames arrive.
     // Keep these large stacks in PSRAM; internal RAM is already tight with LCD/WiFi/AFE.
+    s_fetch_task_with_caps = true;
     BaseType_t fetch_ret = xTaskCreateWithCaps(afe_fetch_task, "afe_fetch",
                                                 AFE_FETCH_TASK_STACK_BYTES, NULL,
                                                 AFE_FETCH_TASK_PRIORITY, NULL,
@@ -493,12 +521,16 @@ int afe_wake_word_init(wake_word_callback_t cb)
         fetch_ret = xTaskCreate(afe_fetch_task, "afe_fetch",
                                AFE_FETCH_TASK_STACK_BYTES, NULL,
                                AFE_FETCH_TASK_PRIORITY, NULL);
+        s_fetch_task_with_caps = false;
+    } else {
+        s_fetch_task_with_caps = true;
     }
     if (fetch_ret != pdPASS) {
         ESP_LOGE(TAG, "afe_fetch task create failed: %ld", (long)fetch_ret);
         return -1;
     }
 
+    s_feed_task_with_caps = true;
     BaseType_t feed_ret = xTaskCreateWithCaps(afe_feed_task, "afe_feed",
                                                AFE_FEED_TASK_STACK_BYTES, NULL,
                                                AFE_FEED_TASK_PRIORITY, NULL,
@@ -507,6 +539,9 @@ int afe_wake_word_init(wake_word_callback_t cb)
         feed_ret = xTaskCreate(afe_feed_task, "afe_feed",
                               AFE_FEED_TASK_STACK_BYTES, NULL,
                               AFE_FEED_TASK_PRIORITY, NULL);
+        s_feed_task_with_caps = false;
+    } else {
+        s_feed_task_with_caps = true;
     }
     if (feed_ret != pdPASS) {
         ESP_LOGE(TAG, "afe_feed task create failed: %ld", (long)feed_ret);

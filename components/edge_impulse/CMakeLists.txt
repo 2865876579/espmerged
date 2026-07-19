@@ -45,12 +45,7 @@ set(EI_SOURCES
     ${EI_SDK}/tensorflow/lite/micro/kernels/reshape.cc
     ${EI_SDK}/tensorflow/lite/micro/kernels/softmax.cc
     ${EI_SDK}/tensorflow/lite/micro/kernels/softmax_common.cc
-)
-
-file(GLOB_RECURSE EI_ESP_NN_SOURCES
-    ${EI_SDK}/porting/espressif/ESP-NN/src/*.c
-    ${EI_SDK}/porting/espressif/ESP-NN/src/*.S
-    ${EI_SDK}/porting/espressif/ESP-NN/src/*.s
+    ${EI_ROOT}/ei_model_wrapper.cpp
 )
 
 file(GLOB_RECURSE EI_ESP_DSP_SOURCES
@@ -61,29 +56,22 @@ file(GLOB_RECURSE EI_ESP_DSP_SOURCES
 )
 
 idf_component_register(
-    SRCS
-        ${EI_SOURCES}
-        ${EI_ESP_NN_SOURCES}
-        ${EI_ESP_DSP_SOURCES}
+    SRCS ${EI_SOURCES} ${EI_ESP_DSP_SOURCES}
     INCLUDE_DIRS
         "."
         "edge-impulse-sdk"
         "edge-impulse-sdk/porting"
-        "edge-impulse-sdk/porting/espressif/ESP-NN"
-        "edge-impulse-sdk/porting/espressif/ESP-NN/include"
-        "edge-impulse-sdk/porting/espressif/ESP-NN/src/common"
         "edge-impulse-sdk/porting/espressif/esp-dsp/modules/common/include"
         "edge-impulse-sdk/porting/espressif/esp-dsp/modules/fft/include"
-    REQUIRES
-        esp_timer
-        heap
+    REQUIRES esp_timer
 )
 
-target_compile_definitions(${COMPONENT_LIB} PUBLIC
-    EI_PORTING_ESPRESSIF=1
+target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_11)
+
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
     EIDSP_USE_ESP_DSP=1
-    EI_CLASSIFIER_TFLITE_ENABLE_ESP_NN=1
-    EI_CLASSIFIER_TFLITE_ENABLE_ESP_NN_S3=1
+    EI_CLASSIFIER_TFLITE_ENABLE_ESP_NN=0
+    EI_CLASSIFIER_TFLITE_ENABLE_ESP_NN_S3=0
     EI_CLASSIFIER_USE_FULL_TFLITE=0
     EI_CLASSIFIER_ALLOCATION_STATIC=1
     CONFIG_DSP_MAX_FFT_SIZE=4096
@@ -91,12 +79,10 @@ target_compile_definitions(${COMPONENT_LIB} PUBLIC
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE
+    -Wno-error
     -Wno-error=unused-variable
     -Wno-error=unused-function
     -Wno-error=maybe-uninitialized
     -Wno-error=missing-field-initializers
     -Wno-error=class-memaccess
-    -Wno-unused-variable
-    -Wno-unused-function
-    -Wno-missing-field-initializers
 )

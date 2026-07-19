@@ -1,7 +1,7 @@
 
-# Edge Impulse library for 0
+# Edge Impulse library for 666
 
-This is a C++ library that lets you run the impulse for "0" (https://studio.edgeimpulse.com/studio/1052551) on any device. It consists of the Edge Impulse inferencing SDK - with implementations of both processing and learning blocks - and your model. You will need to include this library in your project to run your impulse locally.
+This is a C++ library that lets you run the impulse for "666" (https://studio.edgeimpulse.com/studio/1062236) on any device. It consists of the Edge Impulse inferencing SDK - with implementations of both processing and learning blocks - and your model. You will need to include this library in your project to run your impulse locally.
 
 ## Getting Started
 

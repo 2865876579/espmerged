@@ -21,6 +21,8 @@
 extern "C" {
 #endif
 
+#define SENSOR_NTC_COUNT 3
+
 /* ── 传感器数据 ────────────────────────────────────────── */
 typedef struct {
     /* MQ-135 空气质量 */
@@ -31,7 +33,9 @@ typedef struct {
     float pressure_kpa;
     bool  pressure_valid;
 
-    /* NTC on pressure ADS1115 A1, neck temperature */
+    /* NTC thermistors on pressure ADS1115 A1-A3. A1 remains neck_temp_c. */
+    float ntc_temp_c[SENSOR_NTC_COUNT];
+    bool  ntc_valid[SENSOR_NTC_COUNT];
     float neck_temp_c;
     bool  neck_temp_valid;
 
@@ -99,7 +103,7 @@ float sensor_read_pressure_kpa(void);
 void sensor_request_refresh(void);
 
 /**
- * 边沿触发：FSR 检测到有人躺下（>2N，去抖2秒）。
+ * 边沿触发：FSR 检测到有人躺下（>=0.10N，去抖2秒）。
  * 返回 true 一次后自动清除。仅在非对话状态调用。
  */
 bool sensor_person_just_laid_down(void);

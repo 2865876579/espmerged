@@ -7,8 +7,10 @@
 
 #include "sensors.h"
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "driver/uart.h"
@@ -16,6 +18,7 @@
 #include "esp_err.h"
 #include "esp_intr_alloc.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "hal/adc_types.h"
 #include "ads1115_fsr402.h"
 #include "bh1750.h"
@@ -107,6 +110,12 @@ static const ads1115_t s_fsr_ads = {
 
 static const ads1115_mux_t s_fsr_mux[FSR_SENSOR_COUNT] = {
     ADS1115_MUX_AIN0_GND,
+    ADS1115_MUX_AIN1_GND,
+    ADS1115_MUX_AIN2_GND,
+    ADS1115_MUX_AIN3_GND,
+};
+
+static const ads1115_mux_t s_ntc_mux[SENSOR_NTC_COUNT] = {
     ADS1115_MUX_AIN1_GND,
     ADS1115_MUX_AIN2_GND,
     ADS1115_MUX_AIN3_GND,
@@ -207,6 +216,7 @@ static const uint8_t AC_OFF_FRAME1[GREE_STATE_LENGTH] = {
 static sensor_data_t s_latest;
 static portMUX_TYPE   s_data_spinlock = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t   s_sensor_task_handle = NULL;
+static SemaphoreHandle_t s_sensor_refresh_done = NULL;
 static SemaphoreHandle_t s_i2c0_mutex = NULL;  /* MCP5010DP I2C0 浜掓枼 */
 static float s_last_fsr_force_n[FSR_SENSOR_COUNT];
 static bool  s_last_fsr_valid[FSR_SENSOR_COUNT];
@@ -607,7 +617,9 @@ static esp_err_t init_r60abd1_radar(void)
                                      UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE),
                         TAG, "radar uart pin");
     ESP_RETURN_ON_ERROR(uart_driver_install(RADAR_UART_NUM, RADAR_UART_BUF_SIZE,
-                                            0, 0, NULL, ESP_INTR_FLAG_SHARED),
+                                            0, 0, NULL,
+                                            ESP_INTR_FLAG_SHARED |
+                                                ESP_INTR_FLAG_LOWMED),
                         TAG, "radar uart driver");
     s_radar_ready = true;
     s_radar_debug_frames = RADAR_DEBUG_FRAME_LIMIT;
@@ -714,26 +726,39 @@ static void read_mcp5010dp(sensor_data_t *out)
 #endif
 }
 
-static void read_neck_ntc(sensor_data_t *out)
+static void read_ntc_all(sensor_data_t *out)
 {
+    for (int i = 0; i < SENSOR_NTC_COUNT; i++) {
+        out->ntc_temp_c[i] = 0.0f;
+        out->ntc_valid[i] = false;
+    }
     out->neck_temp_valid = false;
     if (!s_mcp_ads_ready || !s_i2c0_mutex) return;
 
     if (xSemaphoreTake(s_i2c0_mutex, pdMS_TO_TICKS(200)) != pdTRUE) return;
-    int16_t raw;
-    float adc_v;
-    esp_err_t err = read_ads_voltage(&s_mcp_ads, ADS1115_MUX_AIN1_GND, &raw, &adc_v);
+    for (int i = 0; i < SENSOR_NTC_COUNT; i++) {
+        int16_t raw;
+        float adc_v;
+        esp_err_t err = read_ads_voltage(&s_mcp_ads, s_ntc_mux[i], &raw, &adc_v);
+        if (err != ESP_OK) {
+            continue;
+        }
+
+        float temp_c;
+        if (!ntc_voltage_to_temp_c(adc_v, &temp_c)) {
+            ESP_LOGW(TAG, "NTC%d invalid raw=%d voltage=%.3fV", i + 1, raw, adc_v);
+            continue;
+        }
+
+        out->ntc_temp_c[i] = temp_c;
+        out->ntc_valid[i] = true;
+        ESP_LOGD(TAG, "NTC%d raw=%d voltage=%.3fV temp=%.2fC",
+                 i + 1, raw, adc_v, temp_c);
+    }
     xSemaphoreGive(s_i2c0_mutex);
 
-    if (err != ESP_OK) return;
-    float temp_c;
-    if (!ntc_voltage_to_temp_c(adc_v, &temp_c)) {
-        ESP_LOGW(TAG, "neck NTC invalid raw=%d voltage=%.3fV", raw, adc_v);
-        return;
-    }
-    out->neck_temp_c = temp_c;
-    out->neck_temp_valid = true;
-    ESP_LOGD(TAG, "neck NTC raw=%d voltage=%.3fV temp=%.2fC", raw, adc_v, temp_c);
+    out->neck_temp_c = out->ntc_temp_c[0];
+    out->neck_temp_valid = out->ntc_valid[0];
 }
 
 static void read_fsr402_all(sensor_data_t *out)
@@ -833,6 +858,33 @@ static void read_environment(sensor_data_t *out)
     }
 }
 
+static void recover_i2c_bus(gpio_num_t sda, gpio_num_t scl)
+{
+    const gpio_config_t config = {
+        .pin_bit_mask = (1ULL << sda) | (1ULL << scl),
+        .mode = GPIO_MODE_INPUT_OUTPUT_OD,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&config);
+    gpio_set_level(sda, 1);
+    gpio_set_level(scl, 1);
+    esp_rom_delay_us(5);
+    for (int pulse = 0; pulse < 9; pulse++) {
+        gpio_set_level(scl, 0);
+        esp_rom_delay_us(5);
+        gpio_set_level(scl, 1);
+        esp_rom_delay_us(5);
+    }
+    gpio_set_level(sda, 0);
+    esp_rom_delay_us(5);
+    gpio_set_level(scl, 1);
+    esp_rom_delay_us(5);
+    gpio_set_level(sda, 1);
+    esp_rom_delay_us(5);
+}
+
 /* 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
  *  鍏紑 API
  * 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?*/
@@ -843,9 +895,13 @@ void init_sensors(void)
 
     /* I2C0 浜掓枼閿侊細闃?pump_task / sensor_task / LLM read_sensors 鎶?ADS1115 */
     s_i2c0_mutex = xSemaphoreCreateMutex();
+    s_sensor_refresh_done = xSemaphoreCreateBinary();
 
     /* FSR 杞欢妯″瀷 */
     init_fsr_models();
+
+    recover_i2c_bus(MCP_ADS_SDA_GPIO, MCP_ADS_SCL_GPIO);
+    recover_i2c_bus(FSR_I2C_SDA_GPIO, FSR_I2C_SCL_GPIO);
 
     /* ADS1115 #1 鈥?MCP5010DP 姘斿帇 (I2C0: GPIO8/9) */
     s_mcp_ads_ready = init_result("ADS1115-MCP", ads1115_init(&s_mcp_ads));
@@ -862,13 +918,12 @@ void init_sensors(void)
                                        FSR_I2C_SDA_GPIO, FSR_I2C_SCL_GPIO,
                                        I2C_CLK_HZ, BH1750_DEFAULT_ADDR);
     if (bh1750_err != ESP_OK) {
-        ESP_LOGW(TAG, "BH1750 init retry 1/2 after 200ms (err=%d)", bh1750_err);
         vTaskDelay(pdMS_TO_TICKS(200));
         bh1750_err = bh1750_init(&s_bh1750, FSR_ADS_I2C_PORT,
                                  FSR_I2C_SDA_GPIO, FSR_I2C_SCL_GPIO,
                                  I2C_CLK_HZ, BH1750_DEFAULT_ADDR);
     }
-    s_bh1750_ready = init_result("BH1750", bh1750_err);
+    s_bh1750_ready = bh1750_err == ESP_OK;
 
     /* SHT31 娓╂箍搴?(I2C1 鍏辩敤 GPIO14/15, addr 0x44) */
     s_sht31_ready = init_result("SHT31",
@@ -921,7 +976,7 @@ void sensor_task(void *arg)
         memset(&data, 0, sizeof(data));
 
         read_mcp5010dp(&data);
-        read_neck_ntc(&data);
+        read_ntc_all(&data);
 #if PRESSURE_DIAGNOSTICS_ENABLED
         s_pressure_diag_cycle++;
         if (s_pressure_diag_cycle >= PRESSURE_DIAG_INTERVAL_CYCLES) {
@@ -994,29 +1049,40 @@ void sensor_task(void *arg)
         memcpy(&s_latest, &data, sizeof(s_latest));
         portEXIT_CRITICAL(&s_data_spinlock);
 
-        ESP_LOGI(
-            TAG,
-            "[FSR] force=[%.2f, %.2f, %.2f, %.2f]N valid=[%d, %d, %d, %d]",
-            data.fsr_force_n[0],
-            data.fsr_force_n[1],
-            data.fsr_force_n[2],
-            data.fsr_force_n[3],
-            data.fsr_valid[0] ? 1 : 0,
-            data.fsr_valid[1] ? 1 : 0,
-            data.fsr_valid[2] ? 1 : 0,
-            data.fsr_valid[3] ? 1 : 0
-        );
+        printf("[FSR] force=[%.2f, %.2f, %.2f, %.2f]N "
+               "valid=[%d, %d, %d, %d] pressure=%.2f kPa pressure_valid=%d\n",
+               data.fsr_force_n[0],
+               data.fsr_force_n[1],
+               data.fsr_force_n[2],
+               data.fsr_force_n[3],
+               data.fsr_valid[0] ? 1 : 0,
+               data.fsr_valid[1] ? 1 : 0,
+               data.fsr_valid[2] ? 1 : 0,
+               data.fsr_valid[3] ? 1 : 0,
+               (double)data.pressure_kpa,
+               data.pressure_valid ? 1 : 0);
 
         /* 鈹€鈹€ 浜哄憳灏卞瘽妫€娴嬶紙FSR 鍔涙晱浼犳劅鍣級鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+        bool person_event_now = false;
+        portENTER_CRITICAL(&s_data_spinlock);
         if (person_now) {
             if (++s_person_debounce >= PERSON_DEBOUNCE_COUNT && !s_person_on_bed) {
                 s_person_event = true;
                 s_person_on_bed = true;
-                ESP_LOGI(TAG, "person detected (FSR >= %.2fN)", PERSON_FSR_THRESHOLD_N);
+                person_event_now = true;
             }
         } else {
             s_person_debounce = 0;
             s_person_on_bed = false;
+            s_person_event = false;
+        }
+        portEXIT_CRITICAL(&s_data_spinlock);
+        if (person_event_now) {
+            printf("person detected (FSR >= %.2fN)\n", PERSON_FSR_THRESHOLD_N);
+        }
+
+        if (s_sensor_refresh_done) {
+            xSemaphoreGive(s_sensor_refresh_done);
         }
 
         /* 浼戠湢 1s锛屽彲琚?sensor_request_refresh 鍞ら啋 */
@@ -1027,12 +1093,18 @@ void sensor_task(void *arg)
 void sensor_request_refresh(void)
 {
     if (!s_sensor_task_handle) return;
+    if (s_sensor_refresh_done) {
+        while (xSemaphoreTake(s_sensor_refresh_done, 0) == pdTRUE) {
+        }
+    }
     xTaskNotifyGive(s_sensor_task_handle);
-    /* 等待 sensor_task 完成一轮读取后再返回。
-     * sensor_task 每轮末尾会通过 ulTaskNotifyTake 释放，此处等待其重新进入睡眠，
-     * 约等于一轮完整读取时间（通常 < 200ms）。
-     * 注意：这仍是保守估算，不是精确握手；若需精确同步，应改用 EventGroup。 */
-    vTaskDelay(pdMS_TO_TICKS(200));
+    if (s_sensor_refresh_done) {
+        if (xSemaphoreTake(s_sensor_refresh_done, pdMS_TO_TICKS(500)) != pdTRUE) {
+            ESP_LOGW(TAG, "sensor refresh timeout");
+        }
+    } else {
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
 }
 
 float sensor_read_pressure_kpa(void)
@@ -1062,7 +1134,7 @@ bool sensor_person_just_laid_down(void)
 {
     /* 原子 read-clear：防止主任务和 sensor_task 并发访问丢失事件 */
     portENTER_CRITICAL(&s_data_spinlock);
-    bool val = s_person_event;
+    bool val = s_person_event && s_person_on_bed;
     s_person_event = false;
     portEXIT_CRITICAL(&s_data_spinlock);
     return val;

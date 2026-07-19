@@ -89,16 +89,24 @@ esp_err_t ads1115_read_raw(const ads1115_t *dev, ads1115_mux_t mux, int16_t *raw
                         TAG, "start conversion failed");
 
     // 按当前采样率估算截止时间，避免一直等待。
-    const TickType_t deadline = xTaskGetTickCount() +
-                                pdMS_TO_TICKS(ads1115_conversion_time_ms(dev->data_rate) + 20);
+    // The project uses a 10 ms FreeRTOS tick. Waiting 2 ms would therefore
+    // become a zero-tick yield and flood the I2C bus with status reads.
+    const uint32_t conversion_ms = ads1115_conversion_time_ms(dev->data_rate);
+    const TickType_t poll_delay = pdMS_TO_TICKS(10);
+    const TickType_t timeout = pdMS_TO_TICKS(conversion_ms + 50);
+    const TickType_t start = xTaskGetTickCount();
+    vTaskDelay(pdMS_TO_TICKS(conversion_ms + 2));
     uint16_t status = 0;
 
     // 轮询配置寄存器的 OS 位，直到转换完成或超时。
     do {
-        vTaskDelay(pdMS_TO_TICKS(2));
         ESP_RETURN_ON_ERROR(ads1115_read_reg(dev, ADS1115_REG_CONFIG, &status),
                             TAG, "poll conversion failed");
-    } while ((status & ADS1115_CONFIG_OS_READY) == 0 && xTaskGetTickCount() < deadline);
+        if ((status & ADS1115_CONFIG_OS_READY) != 0) {
+            break;
+        }
+        vTaskDelay(poll_delay);
+    } while ((TickType_t)(xTaskGetTickCount() - start) < timeout);
 
     if ((status & ADS1115_CONFIG_OS_READY) == 0) {
         ESP_LOGE(TAG,

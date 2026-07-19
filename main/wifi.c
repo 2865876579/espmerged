@@ -10,7 +10,6 @@
 static const char *TAG = "wifi";
 
 #define WIFI_CONNECTED_BIT BIT0
-#define WIFI_FAIL_BIT      BIT1
 #define MAX_RETRY          10
 
 static EventGroupHandle_t s_wifi_event_group;
@@ -22,13 +21,12 @@ static void event_handler(void *arg, esp_event_base_t event_base,
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_retry_num < MAX_RETRY) {
-            esp_wifi_connect();
-            s_retry_num++;
-            ESP_LOGI(TAG, "Wi-Fi reconnect (%d/%d)", s_retry_num, MAX_RETRY);
-        } else {
-            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+        s_retry_num++;
+        if (s_retry_num >= MAX_RETRY) {
+            ESP_LOGW(TAG, "Wi-Fi still unavailable; continuing retries");
+            s_retry_num = 0;
         }
+        esp_wifi_connect();
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
@@ -78,16 +76,17 @@ int wifi_connect(const char *ssid, const char *password)
 
     ESP_LOGI(TAG, "Connecting Wi-Fi: %s", ssid);
 
-    // 等待连上或失败
+    // Keep waiting until the configured hotspot becomes available. A phone
+    // hotspot may be enabled after the device boots, so retry exhaustion must
+    // not leave the firmware permanently offline.
     EventBits_t bits = xEventGroupWaitBits(
         s_wifi_event_group,
-        WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+        WIFI_CONNECTED_BIT,
         pdFALSE, pdFALSE, portMAX_DELAY);
 
     if (bits & WIFI_CONNECTED_BIT) {
         ESP_LOGI(TAG, "Wi-Fi connected");
         return 0;
     }
-    ESP_LOGE(TAG, "Wi-Fi connect failed");
     return -1;
 }

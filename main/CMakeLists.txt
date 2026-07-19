@@ -13,7 +13,6 @@ idf_component_register(
         "lcd_ili9488.c"
         "avatar_storage.c"
         "avatar_rgb666_frames.c"
-        "espdl_snore_adapter.cpp"
         "snore_detector.cpp"
         "font_gb2312_16.c"
     INCLUDE_DIRS "."
