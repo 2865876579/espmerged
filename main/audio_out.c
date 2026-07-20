@@ -60,6 +60,7 @@ void audio_out_init(void)
     i2s_chan_config_t tx_chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     tx_chan_cfg.dma_desc_num = DMA_DESC_NUM;
     tx_chan_cfg.dma_frame_num = DMA_FRAME_NUM;
+    tx_chan_cfg.auto_clear = true;
     ESP_ERROR_CHECK(i2s_new_channel(&tx_chan_cfg, &s_tx_chan, NULL));
 
     i2s_std_config_t tx_cfg = {
