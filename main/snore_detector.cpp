@@ -33,6 +33,7 @@ static constexpr int kVotesRequired = 8;
 static constexpr int kClearVotesRequired = 8;
 static constexpr int kDefaultCooldownSec = 300;
 static constexpr float kDefaultTargetKpa = 4.0f;
+static constexpr int kMinimumAdjustmentHoldSec = 15;
 
 static_assert(EI_CLASSIFIER_FREQUENCY == kSampleRate, "snore model must be 16kHz");
 static_assert(kWindowSamples <= 65536, "snore model window exceeds the audio ring");
@@ -69,7 +70,7 @@ static float clamp_target_kpa(float value)
 {
     if (!isfinite(value) || value <= 0.0f) return kDefaultTargetKpa;
     if (value < 0.5f) return 0.5f;
-    if (value > 5.0f) return 5.0f;
+    if (value > 10.0f) return 10.0f;
     return value;
 }
 
@@ -257,8 +258,12 @@ static void snore_task(void *arg)
         const bool window_full = votes.size == kVoteWindowSize;
         const bool just_detected = !votes.active && window_full &&
                                    votes.snoring_count >= kVotesRequired;
+        const bool clear_hold_elapsed = last_adjust_us == 0 ||
+            (esp_timer_get_time() - last_adjust_us) >=
+                (int64_t)kMinimumAdjustmentHoldSec * 1000000LL;
         const bool just_cleared = votes.active && window_full &&
-                                  votes.clear_count >= kClearVotesRequired;
+                                  votes.clear_count >= kClearVotesRequired &&
+                                  clear_hold_elapsed;
 
         if (just_detected) {
             votes.active = true;

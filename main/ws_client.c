@@ -1167,9 +1167,10 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                                            ? cooldown_item->valueint
                                            : 300;
                     snore_detector_set_policy(enabled, sleep_active, target_kpa, cooldown_sec);
-                    printf("[snore] policy enabled=%d sleep=%d\n",
+                    printf("[snore] policy enabled=%d sleep=%d target=%.2f kPa\n",
                            enabled ? 1 : 0,
-                           sleep_active ? 1 : 0);
+                           sleep_active ? 1 : 0,
+                           (double)target_kpa);
                     if (enabled && sleep_active) {
                         screen_anim_set_subtitle("睡眠", "鼾声监测待命中");
                     }
