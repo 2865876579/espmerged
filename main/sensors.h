@@ -33,7 +33,7 @@ typedef struct {
     float pressure_kpa;
     bool  pressure_valid;
 
-    /* NTC thermistors on pressure ADS1115 A1-A3. A1 remains neck_temp_c. */
+    /* NTC thermistors on pressure ADS1115 A1-A3. neck_temp_c is the highest valid value. */
     float ntc_temp_c[SENSOR_NTC_COUNT];
     bool  ntc_valid[SENSOR_NTC_COUNT];
     float neck_temp_c;

@@ -5,7 +5,7 @@ set "PROJ=%~dp0"
 set "PROJ=%PROJ:~0,-1%"
 cd /d "%PROJ%"
 
-set "ESP_PORT=COM3"
+set "ESP_PORT=COM16"
 set "ESP_BAUD=460800"
 if not "%~1"=="" set "ESP_PORT=%~1"
 

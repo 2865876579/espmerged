@@ -857,32 +857,24 @@ static void run_sleep_greeting(void)
              WAKE_REPLY_RETRY_COUNT);
 }
 
-static void run_one_shot_reply(void)
+static void run_interaction_reply(void)
 {
     s_dialog_active = true;
     snore_detector_set_interaction_active(true);
     s_wake_event = false;
 
-    if (!wait_for_ws_connected(WS_READY_TIMEOUT_MS)) {
-        s_dialog_active = false;
-        snore_detector_set_interaction_active(false);
-        return;
+    if (wait_for_ws_connected(WS_READY_TIMEOUT_MS)) {
+        ws_client_clear_events();
+        printf("\n[环境确认] 等待用户回答\n");
+        if (ws_client_send_raw("{\"type\":\"interaction_reply\",\"state\":\"start\"}")) {
+            if (record_and_send(false) == RECORD_SENT) {
+                (void)wait_for_turn_result(TURN_REPLY_TIMEOUT_MS);
+            }
+            ws_client_send_raw("{\"type\":\"interaction_reply\",\"state\":\"done\"}");
+        }
+        ws_client_clear_events();
     }
 
-    ws_client_clear_events();
-    printf("\n[一次回答] 主动询问后录音\n");
-
-    record_result_t rec = record_and_send(false);
-    if (rec == RECORD_SENT) {
-        turn_wait_result_t result = wait_for_turn_result(TURN_REPLY_TIMEOUT_MS);
-        (void)result;
-    } else if (rec == RECORD_NO_SPEECH) {
-        printf("[一次回答] 未检测到回答，跳过\n");
-    } else {
-        printf("[一次回答] 录音上传失败\n");
-    }
-
-    ws_client_clear_events();
     s_wake_event = false;
     s_dialog_active = false;
     snore_detector_set_interaction_active(false);
@@ -999,11 +991,9 @@ static void run_dialog(void)
 static void on_wake_word(void)
 {
     bool tts_guard = ws_client_is_tts_guard_active();
-    bool listen_once = ws_client_has_listen_once_request();
-    printf("wake callback: active=%d guard=%d listen_once=%d\n",
+    printf("wake callback: active=%d guard=%d\n",
            s_dialog_active ? 1 : 0,
-           tts_guard ? 1 : 0,
-           listen_once ? 1 : 0);
+           tts_guard ? 1 : 0);
 
     if (!s_dialog_active && !tts_guard) {
         s_wake_event = true;
@@ -1016,6 +1006,8 @@ static void handle_tjc_command(const char *cmd)
         return;
     }
 
+    ESP_LOGI(TAG, "TJC command: %s", cmd);
+
     if (strcmp(cmd, "PILLOW_CAL_UP_START") == 0 ||
         strcmp(cmd, "PILLOW_UP_START") == 0 ||
         strcmp(cmd, "PUMP_UP") == 0) {
@@ -1026,14 +1018,19 @@ static void handle_tjc_command(const char *cmd)
         return;
     }
 
-    if (strcmp(cmd, "PILLOW_CAL_UP_STOP") == 0) {
+    if (strcmp(cmd, "PILLOW_CAL_UP_STOP") == 0 ||
+        strcmp(cmd, "PILLOW_UP_STOP") == 0 ||
+        strcmp(cmd, "PUMP_UP_STOP") == 0) {
         ws_client_request_pillow_command("halt", false);
         return;
     }
 
-    if (strcmp(cmd, "PILLOW_STOP") == 0 ||
+    if (strcmp(cmd, "PILLOW_CAL_DOWN_STOP") == 0 ||
+        strcmp(cmd, "PILLOW_DOWN_STOP") == 0 ||
+        strcmp(cmd, "PUMP_DOWN_STOP") == 0 ||
+        strcmp(cmd, "PILLOW_STOP") == 0 ||
         strcmp(cmd, "PUMP_STOP") == 0) {
-        ws_client_request_pillow_command("stop", false);
+        ws_client_request_pillow_command("halt", false);
         return;
     }
 
@@ -1043,11 +1040,6 @@ static void handle_tjc_command(const char *cmd)
         if (!ws_client_request_pillow_command("recover", true)) {
             ESP_LOGW(TAG, "TJC pump down start rejected");
         }
-        return;
-    }
-
-    if (strcmp(cmd, "PILLOW_CAL_DOWN_STOP") == 0) {
-        ws_client_request_pillow_command("halt", false);
         return;
     }
 
@@ -1071,10 +1063,14 @@ static void handle_tjc_command(const char *cmd)
         return;
     }
 
-    if (strcmp(cmd, "PILLOW_HALT") == 0 ||
-        strcmp(cmd, "PUMP_RELEASE") == 0) {
+    if (strcmp(cmd, "PILLOW_HALT") == 0) {
+        ws_client_request_pillow_command("halt", false);
+        return;
+    }
+
+    if (strcmp(cmd, "PUMP_RELEASE") == 0) {
         ws_client_request_pillow_command(
-            strcmp(cmd, "PUMP_RELEASE") == 0 ? "stop" : "halt", false);
+            "stop", false);
         return;
     }
 
@@ -1220,8 +1216,9 @@ void app_main(void)
             s_wake_event = false;
         }
 
-        if (!s_dialog_active && !tts_guard && ws_client_consume_listen_once_request()) {
-            run_one_shot_reply();
+        if (!s_dialog_active && !tts_guard &&
+            ws_client_consume_interaction_listen_request()) {
+            run_interaction_reply();
             continue;
         }
 

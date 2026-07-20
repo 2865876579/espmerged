@@ -60,6 +60,7 @@ static portMUX_TYPE s_subtitle_lock = portMUX_INITIALIZER_UNLOCKED;
 static char s_subtitle_speaker[SUBTITLE_SPEAKER_BYTES] = "小安";
 static char s_subtitle_text[SUBTITLE_TEXT_BYTES] = "你好，我在听";
 static volatile uint32_t s_subtitle_version = 1;
+static TickType_t s_subtitle_expire_tick;
 
 static void subtitle_copy(char *dst, size_t dst_size, const char *src)
 {
@@ -81,9 +82,43 @@ void screen_anim_set_subtitle(const char *speaker, const char *text)
     portENTER_CRITICAL(&s_subtitle_lock);
     subtitle_copy(s_subtitle_speaker, sizeof(s_subtitle_speaker), speaker);
     subtitle_copy(s_subtitle_text, sizeof(s_subtitle_text), text);
+    s_subtitle_expire_tick = 0;
     s_subtitle_version++;
     if (s_subtitle_version == 0) {
         s_subtitle_version = 1;
+    }
+    portEXIT_CRITICAL(&s_subtitle_lock);
+}
+
+void screen_anim_set_subtitle_timed(const char *speaker, const char *text, uint32_t duration_ms)
+{
+    TickType_t expire_tick = duration_ms > 0
+                                 ? xTaskGetTickCount() + pdMS_TO_TICKS(duration_ms)
+                                 : 0;
+    portENTER_CRITICAL(&s_subtitle_lock);
+    subtitle_copy(s_subtitle_speaker, sizeof(s_subtitle_speaker), speaker);
+    subtitle_copy(s_subtitle_text, sizeof(s_subtitle_text), text);
+    s_subtitle_expire_tick = expire_tick;
+    s_subtitle_version++;
+    if (s_subtitle_version == 0) {
+        s_subtitle_version = 1;
+    }
+    portEXIT_CRITICAL(&s_subtitle_lock);
+}
+
+static void subtitle_expire_if_due(void)
+{
+    TickType_t now = xTaskGetTickCount();
+    portENTER_CRITICAL(&s_subtitle_lock);
+    if (s_subtitle_expire_tick != 0 &&
+        (int32_t)(now - s_subtitle_expire_tick) >= 0) {
+        s_subtitle_speaker[0] = '\0';
+        s_subtitle_text[0] = '\0';
+        s_subtitle_expire_tick = 0;
+        s_subtitle_version++;
+        if (s_subtitle_version == 0) {
+            s_subtitle_version = 1;
+        }
     }
     portEXIT_CRITICAL(&s_subtitle_lock);
 }
@@ -749,6 +784,7 @@ static void animation_task(void *arg)
 #endif
     while (1) {
         TickType_t start = xTaskGetTickCount();
+        subtitle_expire_if_due();
 
         uint32_t current_avatar_version = avatar_storage_get_version();
         if (current_avatar_version != drawn_avatar_version) {

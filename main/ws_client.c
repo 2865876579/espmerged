@@ -39,7 +39,7 @@ static volatile bool s_turn_done = false;
 static volatile bool s_dialog_end = false;
 static volatile bool s_pending_dialog_end = false;
 static volatile bool s_tts_playback_done = false;
-static volatile bool s_listen_once_pending = false;
+static volatile bool s_interaction_listen_pending = false;
 static volatile uint32_t s_wake_ack_id = 0;
 static char s_device_id[32] = "esp32s3-unknown";
 static QueueHandle_t s_audio_queue = NULL;  // 音频数据队列（WebSocket → Audio Task）
@@ -47,6 +47,9 @@ static volatile uint32_t s_tts_chunks_queued = 0;
 static volatile uint32_t s_tts_chunks_dropped = 0;
 static OpusDecoder *s_decoder = NULL;  // ★ 模块级，避免每次 TTS 懒初始化
 static SemaphoreHandle_t s_decoder_mutex = NULL;
+static SemaphoreHandle_t s_send_mutex = NULL;
+static QueueHandle_t s_deferred_send_queue = NULL;
+static TaskHandle_t s_deferred_send_task = NULL;
 static portMUX_TYPE s_event_spinlock = portMUX_INITIALIZER_UNLOCKED;
 #define WS_FRAGMENT_MAX_BYTES 16384
 static uint8_t *s_ws_fragment_buf = NULL;
@@ -55,6 +58,37 @@ static size_t s_ws_fragment_total = 0;
 static uint8_t s_ws_fragment_opcode = 0;
 static void clear_ws_fragment(void);
 static bool append_ws_fragment(const esp_websocket_event_data_t *data);
+
+static void deferred_send_task(void *arg)
+{
+    (void)arg;
+    char *json = NULL;
+    while (xQueueReceive(s_deferred_send_queue, &json, portMAX_DELAY) == pdTRUE) {
+        if (json) {
+            ws_client_send_raw(json);
+            free(json);
+        }
+        json = NULL;
+    }
+    s_deferred_send_task = NULL;
+    vTaskDelete(NULL);
+}
+
+static bool defer_text_send(const char *json)
+{
+    if (!json || !s_deferred_send_queue) {
+        return false;
+    }
+    char *copy = strdup(json);
+    if (!copy) {
+        return false;
+    }
+    if (xQueueSend(s_deferred_send_queue, &copy, 0) != pdTRUE) {
+        free(copy);
+        return false;
+    }
+    return true;
+}
 
 typedef struct {
     char url[384];
@@ -327,6 +361,8 @@ static void pump_task(void *arg) {
         pump_cmd_t cmd = request.cmd;
         int dur = request.duration_sec;
         float target = request.target_kpa;
+        ESP_LOGI(TAG, "pump request cmd=%d duration=%d target=%.2f",
+                 (int)cmd, dur, (double)target);
 
         if (cmd == PUMP_TILT) {
             pump_start(); pump_wait_interruptible(dur); pump_stop();
@@ -915,11 +951,13 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                 }
                 else if (strcmp(type->valuestring, "listen_once") == 0) {
                     cJSON *reason = cJSON_GetObjectItem(json, "reason");
-                    portENTER_CRITICAL(&s_event_spinlock);
-                    s_listen_once_pending = true;
-                    portEXIT_CRITICAL(&s_event_spinlock);
-                    printf("[listen_once] %s\n",
-                           (reason && cJSON_IsString(reason)) ? reason->valuestring : "");
+                    if (reason && cJSON_IsString(reason) &&
+                        (strcmp(reason->valuestring, "environment_adjustment_reply") == 0 ||
+                         strcmp(reason->valuestring, "comfort_reply") == 0)) {
+                        portENTER_CRITICAL(&s_event_spinlock);
+                        s_interaction_listen_pending = true;
+                        portEXIT_CRITICAL(&s_event_spinlock);
+                    }
                 }
                 else if (strcmp(type->valuestring, "status") == 0) {
                     cJSON *msg = cJSON_GetObjectItem(json, "msg");
@@ -935,7 +973,14 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     cJSON *msg = cJSON_GetObjectItem(json, "msg");
                     if (msg && cJSON_IsString(msg)) {
                         printf("[screen_status] %s\n", msg->valuestring);
-                        screen_anim_set_subtitle("状态", msg->valuestring);
+                        cJSON *duration = cJSON_GetObjectItem(json, "duration_ms");
+                        int duration_ms = cJSON_IsNumber(duration) ? duration->valueint : 0;
+                        if (duration_ms > 0) {
+                            screen_anim_set_subtitle_timed("状态", msg->valuestring,
+                                                           (uint32_t)duration_ms);
+                        } else {
+                            screen_anim_set_subtitle("状态", msg->valuestring);
+                        }
                     }
                 }
                 else if (strcmp(type->valuestring, "stt_result") == 0) {
@@ -1140,6 +1185,7 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     cJSON *target_item = cJSON_GetObjectItem(json, "target_kpa");
                     bool has_target_kpa = cJSON_IsNumber(target_item);
                     float target_kpa = has_target_kpa ? clamp_pillow_pressure_kpa((float)cJSON_GetNumberValue(target_item)) : 0.0f;
+                    int dur = 0;
 
                     if (has_target_kpa) {
                         // ★ 闭环模式：有目标气压，边充/放边读传感器，到位即停
@@ -1151,8 +1197,8 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     } else {
                         // ★ 开环模式：纯时间控制（兼容旧协议）
                         cJSON *duration_item = cJSON_GetObjectItem(json, "duration_sec");
-                        int dur = cJSON_IsNumber(duration_item)
-                                      ? duration_item->valueint : 3;
+                        dur = cJSON_IsNumber(duration_item)
+                                  ? duration_item->valueint : 3;
                         if (dur < 1) dur = 3;
                         if (dur > 600) dur = 600;
 
@@ -1166,6 +1212,11 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                             submit_pump_request(PUMP_HALT, 0, 0.0f);
                         }
                     }
+                    ESP_LOGI(TAG, "pillow_cmd action=%s target=%s%.2f duration=%d",
+                             action,
+                             has_target_kpa ? "" : "none/",
+                             has_target_kpa ? target_kpa : 0.0f,
+                             has_target_kpa ? 0 : dur);
                 }
                 else if (strcmp(type->valuestring, "music_barge_result") == 0) {
                     cJSON *stop = cJSON_GetObjectItem(json, "stop");
@@ -1261,13 +1312,15 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
 
                     char *json_str = cJSON_PrintUnformatted(resp);
                     if (json_str) {
-                        ws_client_send_raw(json_str);
+                        if (!defer_text_send(json_str)) {
+                            ESP_LOGW(TAG, "sensor_data deferred send queue full");
+                        }
                         free(json_str);
                     } else {
                         ESP_LOGE(TAG, "sensor_data JSON alloc failed free_heap=%u min_free_heap=%u",
                                  (unsigned)esp_get_free_heap_size(),
                                  (unsigned)esp_get_minimum_free_heap_size());
-                        ws_client_send_raw("{\"type\":\"sensor_data\",\"data\":{\"error\":\"json_alloc_failed\"}}");
+                        defer_text_send("{\"type\":\"sensor_data\",\"data\":{\"error\":\"json_alloc_failed\"}}");
                     }
                     cJSON_Delete(resp);
                     printf("[pressure] kPa=%.2f valid=%d\n",
@@ -1359,6 +1412,45 @@ void ws_client_start(const char *uri)
         s_audio_queue = NULL;
         return;
     }
+    s_send_mutex = xSemaphoreCreateMutex();
+    if (!s_send_mutex) {
+        ESP_LOGE(TAG, "websocket send mutex create failed");
+        vSemaphoreDelete(s_decoder_mutex);
+        vQueueDelete(s_pump_queue);
+        vQueueDelete(s_audio_queue);
+        s_decoder_mutex = NULL;
+        s_pump_queue = NULL;
+        s_audio_queue = NULL;
+        return;
+    }
+    s_deferred_send_queue = xQueueCreate(4, sizeof(char *));
+    if (!s_deferred_send_queue) {
+        ESP_LOGE(TAG, "deferred send queue create failed");
+        vSemaphoreDelete(s_send_mutex);
+        vSemaphoreDelete(s_decoder_mutex);
+        vQueueDelete(s_pump_queue);
+        vQueueDelete(s_audio_queue);
+        s_send_mutex = NULL;
+        s_decoder_mutex = NULL;
+        s_pump_queue = NULL;
+        s_audio_queue = NULL;
+        return;
+    }
+    if (xTaskCreate(deferred_send_task, "ws_tx", 4096, NULL, 4,
+                    &s_deferred_send_task) != pdPASS) {
+        ESP_LOGE(TAG, "deferred send task create failed");
+        vQueueDelete(s_deferred_send_queue);
+        vSemaphoreDelete(s_send_mutex);
+        vSemaphoreDelete(s_decoder_mutex);
+        vQueueDelete(s_pump_queue);
+        vQueueDelete(s_audio_queue);
+        s_deferred_send_queue = NULL;
+        s_send_mutex = NULL;
+        s_decoder_mutex = NULL;
+        s_pump_queue = NULL;
+        s_audio_queue = NULL;
+        return;
+    }
 
     // 音频播放任务：prio=9 高于 feed(8)，确保 DMA 不断流
     BaseType_t audio_ret = xTaskCreatePinnedToCoreWithCaps(
@@ -1379,12 +1471,27 @@ void ws_client_start(const char *uri)
     if (xTaskCreate(pump_task, "pump", 4096, NULL, 2, &s_pump_task) != pdPASS) {
         ESP_LOGE(TAG, "pump task create failed");
         s_pump_task = NULL;
+        if (s_deferred_send_task) {
+            vTaskDelete(s_deferred_send_task);
+            s_deferred_send_task = NULL;
+        }
+        if (s_deferred_send_queue) {
+            char *pending = NULL;
+            while (xQueueReceive(s_deferred_send_queue, &pending, 0) == pdTRUE) {
+                free(pending);
+            }
+            vQueueDelete(s_deferred_send_queue);
+            s_deferred_send_queue = NULL;
+        }
         vQueueDelete(s_pump_queue);
         vQueueDelete(s_audio_queue);
         vSemaphoreDelete(s_decoder_mutex);
+        vSemaphoreDelete(s_send_mutex);
         s_pump_queue = NULL;
         s_audio_queue = NULL;
         s_decoder_mutex = NULL;
+        s_send_mutex = NULL;
+        s_deferred_send_queue = NULL;
         return;
     }
 
@@ -1416,6 +1523,27 @@ void ws_client_start(const char *uri)
 }
 
 
+static int ws_send_frame(const char *data, int len, bool binary)
+{
+    if (!data || len <= 0 || !s_client || !s_send_mutex ||
+        !esp_websocket_client_is_connected(s_client)) {
+        return -1;
+    }
+    if (xSemaphoreTake(s_send_mutex, pdMS_TO_TICKS(500)) != pdTRUE) {
+        ESP_LOGW(TAG, "websocket send lock timeout");
+        return -1;
+    }
+    int sent = -1;
+    if (esp_websocket_client_is_connected(s_client)) {
+        sent = binary
+            ? esp_websocket_client_send_bin(s_client, data, len, pdMS_TO_TICKS(1000))
+            : esp_websocket_client_send_text(s_client, data, len, pdMS_TO_TICKS(1000));
+    }
+    xSemaphoreGive(s_send_mutex);
+    return sent;
+}
+
+
 bool ws_client_send_text(const char *text)
 {
     if (!s_client || !esp_websocket_client_is_connected(s_client)) {
@@ -1434,7 +1562,7 @@ bool ws_client_send_text(const char *text)
     }
     int json_len = strlen(json_str);
 
-    int sent = esp_websocket_client_send_text(s_client, json_str, json_len, portMAX_DELAY);
+    int sent = ws_send_frame(json_str, json_len, false);
     free(json_str);
     cJSON_Delete(msg);
     return sent >= 0;
@@ -1446,7 +1574,7 @@ bool ws_client_send_raw(const char *json_str)
         return false;
     }
     int json_len = strlen(json_str);
-    int sent = esp_websocket_client_send_text(s_client, json_str, json_len, portMAX_DELAY);
+    int sent = ws_send_frame(json_str, json_len, false);
     return sent >= 0;
 }
 
@@ -1460,7 +1588,7 @@ bool ws_client_send_binary(const uint8_t *data, int len)
         return false;
     }
 
-    int sent = esp_websocket_client_send_bin(s_client, (const char *)data, len, portMAX_DELAY);
+    int sent = ws_send_frame((const char *)data, len, true);
     return sent >= 0;
 }
 
@@ -1609,19 +1737,11 @@ bool ws_client_consume_tts_playback_done(void)
     return value;
 }
 
-bool ws_client_consume_listen_once_request(void)
+bool ws_client_consume_interaction_listen_request(void)
 {
     portENTER_CRITICAL(&s_event_spinlock);
-    bool value = s_listen_once_pending;
-    s_listen_once_pending = false;
-    portEXIT_CRITICAL(&s_event_spinlock);
-    return value;
-}
-
-bool ws_client_has_listen_once_request(void)
-{
-    portENTER_CRITICAL(&s_event_spinlock);
-    bool value = s_listen_once_pending;
+    bool value = s_interaction_listen_pending;
+    s_interaction_listen_pending = false;
     portEXIT_CRITICAL(&s_event_spinlock);
     return value;
 }

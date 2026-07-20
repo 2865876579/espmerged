@@ -410,8 +410,8 @@ esp_err_t usart_tjc_add_waveform(uint8_t component_id,
 esp_err_t usart_tjc_update_curve_page(uint8_t heart_bpm,
                                       uint8_t breath_bpm,
                                       bool radar_valid,
-                                      bool fsr_valid,
-                                      float fsr_max_n)
+                                      bool motion_valid,
+                                      float motion_level)
 {
     esp_err_t first_err = ESP_OK;
     bool radar_warn = radar_valid && usart_tjc_warn_radar(heart_bpm, breath_bpm);
@@ -427,8 +427,8 @@ esp_err_t usart_tjc_update_curve_page(uint8_t heart_bpm,
 
     const char *move_text = "--";
     uint16_t move_color = TJC_COLOR_GRAY;
-    if (fsr_valid) {
-        if (fsr_max_n >= TJC_PERSON_PRESENT_FORCE_N) {
+    if (motion_valid) {
+        if (motion_level >= 10.0f) {
             move_text = "ACTIVE";
             move_color = TJC_COLOR_ORANGE;
         } else {

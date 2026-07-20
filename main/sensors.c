@@ -56,6 +56,7 @@ static const char *TAG = "sensors";
 #define RADAR_STALE_MS          6000
 #define RADAR_ENABLE_INTERVAL_MS 3000
 #define RADAR_QUERY_INTERVAL_MS 3000
+#define RADAR_MOTION_QUERY_INTERVAL_MS 1000
 #define RADAR_DEBUG_FRAME_LIMIT 12
 
 
@@ -147,7 +148,9 @@ static bool s_radar_ready;
 static volatile bool s_radar_person_gate;
 static uint8_t s_radar_heart_bpm;
 static uint8_t s_radar_breath_bpm;
+static uint8_t s_radar_body_motion;
 static TickType_t s_radar_last_update_tick;
+static TickType_t s_radar_motion_last_update_tick;
 static uint8_t s_radar_debug_frames;
 static portMUX_TYPE s_radar_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -218,10 +221,6 @@ static portMUX_TYPE   s_data_spinlock = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t   s_sensor_task_handle = NULL;
 static SemaphoreHandle_t s_sensor_refresh_done = NULL;
 static SemaphoreHandle_t s_i2c0_mutex = NULL;  /* MCP5010DP I2C0 浜掓枼 */
-static float s_last_fsr_force_n[FSR_SENSOR_COUNT];
-static bool  s_last_fsr_valid[FSR_SENSOR_COUNT];
-static bool  s_motion_baseline_ready;
-
 /* 鈹€鈹€ 浜哄憳灏卞瘽妫€娴嬶紙FSR 鍔涙晱浼犳劅鍣級鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 #define PERSON_FSR_THRESHOLD_N  0.10f
 #define PERSON_DEBOUNCE_COUNT    2       // 杩炵画2绉掔‘璁?
@@ -430,6 +429,8 @@ static void radar_send_cmd(uint8_t control, uint8_t command, const uint8_t *payl
 static void radar_enable_measurement(void)
 {
     uint8_t enable = 0x01;
+    radar_send_cmd(0x80, 0x00, &enable, 1);  /* presence and motion monitor on */
+    vTaskDelay(pdMS_TO_TICKS(20));
     radar_send_cmd(0x81, 0x00, &enable, 1);  /* breath monitor on */
     vTaskDelay(pdMS_TO_TICKS(20));
     radar_send_cmd(0x85, 0x00, &enable, 1);  /* heart monitor on */
@@ -440,6 +441,12 @@ static void radar_query_values(void)
     uint8_t query = 0x0F;
     radar_send_cmd(0x81, 0x82, &query, 1);  /* breath value query */
     radar_send_cmd(0x85, 0x82, &query, 1);  /* heart value query */
+}
+
+static void radar_query_body_motion(void)
+{
+    uint8_t query = 0x0F;
+    radar_send_cmd(0x80, 0x83, &query, 1);
 }
 
 static void radar_set_values(uint8_t heart_bpm, uint8_t breath_bpm, bool update_heart, bool update_breath)
@@ -459,12 +466,26 @@ static void radar_set_values(uint8_t heart_bpm, uint8_t breath_bpm, bool update_
     portEXIT_CRITICAL(&s_radar_spinlock);
 }
 
+static void radar_set_body_motion(uint8_t level)
+{
+    if (!s_radar_person_gate) {
+        return;
+    }
+
+    portENTER_CRITICAL(&s_radar_spinlock);
+    s_radar_body_motion = level > 100 ? 100 : level;
+    s_radar_motion_last_update_tick = xTaskGetTickCount();
+    portEXIT_CRITICAL(&s_radar_spinlock);
+}
+
 static void radar_reset_values(void)
 {
     portENTER_CRITICAL(&s_radar_spinlock);
     s_radar_heart_bpm = 0;
     s_radar_breath_bpm = 0;
+    s_radar_body_motion = 0;
     s_radar_last_update_tick = 0;
+    s_radar_motion_last_update_tick = 0;
     portEXIT_CRITICAL(&s_radar_spinlock);
 }
 
@@ -477,6 +498,7 @@ static void radar_set_person_gate(bool enabled)
     } else if (!was_enabled) {
         radar_enable_measurement();
         radar_query_values();
+        radar_query_body_motion();
     }
 }
 
@@ -506,6 +528,22 @@ static void radar_get_values(uint8_t *heart_bpm, uint8_t *breath_bpm, bool *vali
     if (valid) *valid = fresh && (heart > 0 || breath > 0);
 }
 
+static void radar_get_body_motion(float *level, bool *valid)
+{
+    uint8_t motion;
+    TickType_t last_tick;
+
+    portENTER_CRITICAL(&s_radar_spinlock);
+    motion = s_radar_body_motion;
+    last_tick = s_radar_motion_last_update_tick;
+    portEXIT_CRITICAL(&s_radar_spinlock);
+
+    bool fresh = s_radar_person_gate && last_tick != 0 &&
+                 (xTaskGetTickCount() - last_tick) <= pdMS_TO_TICKS(RADAR_STALE_MS);
+    if (level) *level = fresh ? (float)motion : 0.0f;
+    if (valid) *valid = fresh;
+}
+
 static void radar_handle_frame(const uint8_t *frame, size_t frame_len)
 {
     if (!frame || frame_len < 9) return;
@@ -525,13 +563,16 @@ static void radar_handle_frame(const uint8_t *frame, size_t frame_len)
     const uint8_t *payload = &frame[6];
     if (payload_len < 1) return;
 
-    if (s_radar_debug_frames > 0 && (control == 0x81 || control == 0x85)) {
+    if (s_radar_debug_frames > 0 &&
+        (control == 0x80 || control == 0x81 || control == 0x85)) {
         ESP_LOGI(TAG, "R60ABD1 frame ctrl=0x%02X cmd=0x%02X len=%u data0=%u",
                  control, command, payload_len, payload[0]);
         s_radar_debug_frames--;
     }
 
-    if (control == 0x85 && (command == 0x02 || command == 0x82)) {
+    if (control == 0x80 && (command == 0x03 || command == 0x83)) {
+        radar_set_body_motion(payload[0]);
+    } else if (control == 0x85 && (command == 0x02 || command == 0x82)) {
         radar_set_values(payload[0], 0, true, false);
     } else if (control == 0x81 && (command == 0x02 || command == 0x82)) {
         radar_set_values(0, payload[0], false, true);
@@ -545,6 +586,7 @@ static void radar_uart_task(void *arg)
     size_t used = 0;
     TickType_t last_enable = 0;
     TickType_t last_query = 0;
+    TickType_t last_motion_query = 0;
 
     while (1) {
         TickType_t now = xTaskGetTickCount();
@@ -562,6 +604,11 @@ static void radar_uart_task(void *arg)
             (now - last_query) >= pdMS_TO_TICKS(RADAR_QUERY_INTERVAL_MS)) {
             radar_query_values();
             last_query = now;
+        }
+        if (s_radar_person_gate &&
+            (now - last_motion_query) >= pdMS_TO_TICKS(RADAR_MOTION_QUERY_INTERVAL_MS)) {
+            radar_query_body_motion();
+            last_motion_query = now;
         }
         if (used >= sizeof(buf)) {
             used = 0;
@@ -757,8 +804,15 @@ static void read_ntc_all(sensor_data_t *out)
     }
     xSemaphoreGive(s_i2c0_mutex);
 
-    out->neck_temp_c = out->ntc_temp_c[0];
-    out->neck_temp_valid = out->ntc_valid[0];
+    for (int i = 0; i < SENSOR_NTC_COUNT; i++) {
+        if (!out->ntc_valid[i]) {
+            continue;
+        }
+        if (!out->neck_temp_valid || out->ntc_temp_c[i] > out->neck_temp_c) {
+            out->neck_temp_c = out->ntc_temp_c[i];
+            out->neck_temp_valid = true;
+        }
+    }
 }
 
 static void read_fsr402_all(sensor_data_t *out)
@@ -784,31 +838,6 @@ static void read_fsr402_all(sensor_data_t *out)
         out->fsr_force_n[i] = force_n;
         out->fsr_valid[i] = true;
         ESP_LOGD(TAG, "FSR%d N=%.3f", i + 1, force_n);
-    }
-}
-
-static void update_body_motion_from_fsr(sensor_data_t *out)
-{
-    if (!out) return;
-
-    bool any_valid = false;
-    float delta_sum = 0.0f;
-    for (int i = 0; i < FSR_SENSOR_COUNT; i++) {
-        if (!out->fsr_valid[i]) {
-            continue;
-        }
-        any_valid = true;
-        if (s_motion_baseline_ready && s_last_fsr_valid[i]) {
-            delta_sum += fabsf(out->fsr_force_n[i] - s_last_fsr_force_n[i]);
-        }
-        s_last_fsr_force_n[i] = out->fsr_force_n[i];
-        s_last_fsr_valid[i] = true;
-    }
-
-    out->body_motion_valid = any_valid;
-    out->body_motion_level = (any_valid && s_motion_baseline_ready) ? delta_sum : 0.0f;
-    if (any_valid) {
-        s_motion_baseline_ready = true;
     }
 }
 
@@ -985,7 +1014,6 @@ void sensor_task(void *arg)
         }
 #endif
         read_fsr402_all(&data);
-        update_body_motion_from_fsr(&data);
         read_environment(&data);
 
         bool person_now = false;
@@ -997,6 +1025,7 @@ void sensor_task(void *arg)
         }
         radar_set_person_gate(person_now);
         radar_get_values(&data.radar_heart_bpm, &data.radar_breath_bpm, &data.radar_valid);
+        radar_get_body_motion(&data.body_motion_level, &data.body_motion_valid);
 
         if (s_usart_ready) {
             bool fsr_any_valid = false;
@@ -1016,8 +1045,8 @@ void sensor_task(void *arg)
                 tjc_err = usart_tjc_update_curve_page(data.radar_heart_bpm,
                                                       data.radar_breath_bpm,
                                                       data.radar_valid,
-                                                      fsr_any_valid,
-                                                      fsr_max_n);
+                                                      data.body_motion_valid,
+                                                      data.body_motion_level);
             } else {
                 tjc_err = usart_tjc_update_sleep_home(
                     data.temperature_c,

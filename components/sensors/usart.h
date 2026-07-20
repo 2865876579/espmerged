@@ -49,8 +49,8 @@ esp_err_t usart_tjc_add_waveform(uint8_t component_id,
 esp_err_t usart_tjc_update_curve_page(uint8_t heart_bpm,
                                       uint8_t breath_bpm,
                                       bool radar_valid,
-                                      bool fsr_valid,
-                                      float fsr_max_n);
+                                      bool motion_valid,
+                                      float motion_level);
 
 #ifdef __cplusplus
 }
