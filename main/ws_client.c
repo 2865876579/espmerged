@@ -391,10 +391,7 @@ static void pump_task(void *arg) {
             }
         } else if (cmd == PUMP_RECOVER_CONTINUOUS) {
             if (valve_open()) {
-                const int64_t deadline_us = esp_timer_get_time() +
-                    (int64_t)PILLOW_MANUAL_MAX_RUN_MS * 1000LL;
-                while (esp_timer_get_time() < deadline_us &&
-                       !pump_consume_interrupt()) {
+                while (!pump_consume_interrupt()) {
                     vTaskDelay(pdMS_TO_TICKS(100));
                 }
                 valve_close();
@@ -535,6 +532,33 @@ static void pump_task(void *arg) {
                 stalled ? "true" : "false");
             ws_client_send_raw(buf);
         }
+    }
+}
+
+static void avatar_restore_default_task(void *arg)
+{
+    (void)arg;
+    screen_anim_set_subtitle("形象", "正在恢复默认形象");
+    esp_err_t ret = avatar_storage_clear_custom();
+    char msg[224];
+    snprintf(msg, sizeof(msg),
+             "{\"type\":\"avatar_state\",\"ok\":%s,\"default\":true,\"ret\":%d}",
+             ret == ESP_OK ? "true" : "false", ret);
+    ws_client_send_raw(msg);
+    screen_anim_set_subtitle("形象", ret == ESP_OK ? "默认形象已恢复" : "默认形象恢复失败");
+    vTaskDelete(NULL);
+}
+
+static void start_avatar_restore_default(void)
+{
+    if (xTaskCreatePinnedToCore(avatar_restore_default_task,
+                                "avatar_restore",
+                                3072,
+                                NULL,
+                                3,
+                                NULL,
+                                0) != pdPASS) {
+        ws_client_send_raw("{\"type\":\"avatar_state\",\"ok\":false,\"default\":true,\"ret\":-2}");
     }
 }
 
@@ -1047,6 +1071,9 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     uint32_t crc32 = avatar_storage_parse_crc32_text(crc_text);
                     start_avatar_download(url, size, crc32);
                 }
+                else if (strcmp(type->valuestring, "avatar_restore_default") == 0) {
+                    start_avatar_restore_default();
+                }
                 else if (strcmp(type->valuestring, "led_cmd") == 0) {
                     const char *action = cJSON_GetStringValue(cJSON_GetObjectItem(json, "action"));
                     bool enabled = true;
@@ -1232,6 +1259,7 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     }
                     cJSON *target_item = cJSON_GetObjectItem(json, "target_kpa");
                     bool has_target_kpa = cJSON_IsNumber(target_item);
+                    bool continuous = cJSON_IsTrue(cJSON_GetObjectItem(json, "continuous"));
                     float target_kpa = has_target_kpa ? clamp_pillow_pressure_kpa((float)cJSON_GetNumberValue(target_item)) : 0.0f;
                     int dur = 0;
 
@@ -1250,25 +1278,34 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                         }
                     } else {
                         // ★ 开环模式：纯时间控制（兼容旧协议）
-                        cJSON *duration_item = cJSON_GetObjectItem(json, "duration_sec");
-                        dur = cJSON_IsNumber(duration_item)
-                                  ? duration_item->valueint : 3;
-                        if (dur < 1) dur = PILLOW_MANUAL_MAX_SECONDS;
-                        if (dur > PILLOW_MANUAL_MAX_SECONDS) {
-                            dur = PILLOW_MANUAL_MAX_SECONDS;
-                        }
+                        if (continuous) {
+                            if (strcmp(action, "tilt") == 0) {
+                                submit_pump_request(PUMP_TILT_CONTINUOUS, 0, 0.0f);
+                            } else if (strcmp(action, "recover") == 0) {
+                                submit_pump_request(PUMP_RECOVER_CONTINUOUS, 0, 0.0f);
+                            }
+                        } else {
+                            cJSON *duration_item = cJSON_GetObjectItem(json, "duration_sec");
+                            dur = cJSON_IsNumber(duration_item)
+                                      ? duration_item->valueint : 3;
+                            if (dur < 1) dur = PILLOW_MANUAL_MAX_SECONDS;
+                            if (dur > PILLOW_MANUAL_MAX_SECONDS) {
+                                dur = PILLOW_MANUAL_MAX_SECONDS;
+                            }
 
-                        if (strcmp(action, "tilt") == 0) {
-                            submit_pump_request(PUMP_TILT, dur, 0.0f);
-                        } else if (strcmp(action, "recover") == 0) {
-                            submit_pump_request(PUMP_RECOVER, dur, 0.0f);
+                            if (strcmp(action, "tilt") == 0) {
+                                submit_pump_request(PUMP_TILT, dur, 0.0f);
+                            } else if (strcmp(action, "recover") == 0) {
+                                submit_pump_request(PUMP_RECOVER, dur, 0.0f);
+                            }
                         }
                     }
-                    ESP_LOGI(TAG, "pillow_cmd action=%s target=%s%.2f duration=%d",
+                    ESP_LOGI(TAG, "pillow_cmd action=%s target=%s%.2f duration=%d continuous=%d",
                              action,
                              has_target_kpa ? "" : "none/",
                              has_target_kpa ? target_kpa : 0.0f,
-                             has_target_kpa ? 0 : dur);
+                             has_target_kpa ? 0 : dur,
+                             continuous ? 1 : 0);
                 }
                 else if (strcmp(type->valuestring, "music_barge_result") == 0) {
                     cJSON *stop = cJSON_GetObjectItem(json, "stop");

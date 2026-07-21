@@ -286,6 +286,38 @@ esp_err_t avatar_storage_download_rgb666(const char *url,
     return avatar_storage_reload();
 }
 
+esp_err_t avatar_storage_clear_custom(void)
+{
+#if !ENABLE_CUSTOM_AVATAR_STORAGE
+    return ESP_OK;
+#endif
+    if (!s_partition) {
+        s_partition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+                                               ESP_PARTITION_SUBTYPE_ANY,
+                                               AVATAR_PARTITION_LABEL);
+    }
+    if (!s_partition) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    if (s_mmap_handle) {
+        spi_flash_munmap(s_mmap_handle);
+        s_mmap_handle = 0;
+    }
+    s_mapped_pixels = NULL;
+
+    esp_err_t ret = esp_partition_erase_range(s_partition, 0, s_partition->size);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "erase custom avatar failed: %s", esp_err_to_name(ret));
+        avatar_storage_reload();
+        return ret;
+    }
+
+    s_version++;
+    ESP_LOGI(TAG, "custom avatar cleared; built-in avatar active");
+    return ESP_OK;
+}
+
 uint32_t avatar_storage_parse_crc32_text(const char *text)
 {
     return parse_crc32(text);

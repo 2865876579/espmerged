@@ -18,4 +18,5 @@ uint32_t avatar_storage_get_version(void);
 esp_err_t avatar_storage_download_rgb666(const char *url,
                                          size_t expected_size,
                                          uint32_t expected_crc32);
+esp_err_t avatar_storage_clear_custom(void);
 uint32_t avatar_storage_parse_crc32_text(const char *text);
