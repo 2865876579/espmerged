@@ -1,0 +1,144 @@
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce3818,len:0x1758
+load:0x403c9700,len:0x4
+load:0x403c9704,len:0xc00
+load:0x403cc700,len:0x2e04
+entry 0x403c9908
+[0;32mI (27) boot: ESP-IDF v5.1.2-dirty 2nd stage bootloader[0m
+[0;32mI (27) boot: compile time Jul  2 2026 22:20:54[0m
+[0;32mI (27) boot: Multicore bootloader[0m
+[0;32mI (30) boot: chip revision: v0.2[0m
+[0;32mI (34) boot.esp32s3: Boot SPI Speed : 80MHz[0m
+[0;32mI (39) boot.esp32s3: SPI Mode       : DIO[0m
+[0;32mI (44) boot.esp32s3: SPI Flash Size : 16MB[0m
+[0;32mI (49) boot: Enabling RNG early entropy source...[0m
+[0;32mI (54) boot: Partition Table:[0m
+[0;32mI (57) boot: ## Label            Usage          Type ST Offset   Length[0m
+[0;32mI (65) boot:  0 nvs              WiFi data        01 02 00009000 00006000[0m
+[0;32mI (72) boot:  1 phy_init         RF data          01 01 0000f000 00001000[0m
+[0;32mI (80) boot:  2 factory          factory app      00 00 00010000 00500000[0m
+[0;32mI (87) boot:  3 model            Unknown data     01 81 00510000 00300000[0m
+[0;32mI (95) boot:  4 avatar           Unknown data     01 40 00810000 00100000[0m
+[0;32mI (102) boot: End of partition table[0m
+[0;32mI (106) esp_image: segment 0: paddr=00010020 vaddr=3c150020 size=2ae0e8h (2810088) map[0m
+[0;32mI (619) esp_image: segment 1: paddr=002be110 vaddr=3fc9d700 size=01f08h (  7944) load[0m
+[0;32mI (621) esp_image: segment 2: paddr=002c0020 vaddr=42000020 size=1415b0h (1316272) map[0m
+[0;32mI (861) esp_image: segment 3: paddr=004015d8 vaddr=3fc9f608 size=0547ch ( 21628) load[0m
+[0;32mI (866) esp_image: segment 4: paddr=00406a5c vaddr=40374000 size=19664h (104036) load[0m
+[0;32mI (890) esp_image: segment 5: paddr=004200c8 vaddr=600fe010 size=00004h (     4) load[0m
+[0;32mI (901) boot: Loaded app from partition at offset 0x10000[0m
+[0;32mI (901) boot: Disabling RNG early entropy source...[0m
+[0;32mI (913) cpu_start: Multicore app[0m
+[0;32mI (913) octal_psram: vendor id    : 0x0d (AP)[0m
+[0;32mI (913) octal_psram: dev id       : 0x02 (generation 3)[0m
+[0;32mI (916) octal_psram: density      : 0x03 (64 Mbit)[0m
+[0;32mI (922) octal_psram: good-die     : 0x01 (Pass)[0m
+[0;32mI (927) octal_psram: Latency      : 0x01 (Fixed)[0m
+[0;32mI (932) octal_psram: VCC          : 0x01 (3V)[0m
+[0;32mI (937) octal_psram: SRF          : 0x01 (Fast Refresh)[0m
+[0;32mI (943) octal_psram: BurstType    : 0x01 (Hybrid Wrap)[0m
+[0;32mI (949) octal_psram: BurstLen     : 0x01 (32 Byte)[0m
+[0;32mI (955) octal_psram: Readlatency  : 0x02 (10 cycles@Fixed)[0m
+[0;32mI (961) octal_psram: DriveStrength: 0x00 (1/1)[0m
+[0;32mI (967) MSPI Timing: PSRAM timing tuning index: 5[0m
+[0;32mI (971) esp_psram: Found 8MB PSRAM device[0m
+[0;32mI (976) esp_psram: Speed: 80MHz[0m
+[0;32mI (980) cpu_start: Pro cpu up.[0m
+[0;32mI (983) cpu_start: Starting app cpu, entry point is 0x403758c0[0m
+[0;32mI (0) cpu_start: App cpu up.[0m
+[0;32mI (1442) esp_psram: SPI SRAM memory test OK[0m
+[0;32mI (1451) cpu_start: Pro cpu start user code[0m
+[0;32mI (1451) cpu_start: cpu freq: 160000000 Hz[0m
+[0;32mI (1452) cpu_start: Application information:[0m
+[0;32mI (1455) cpu_start: Project name:     pump_control[0m
+[0;32mI (1460) cpu_start: App version:      6d752ea-dirty[0m
+[0;32mI (1466) cpu_start: Compile time:     Jul 21 2026 18:38:20[0m
+[0;32mI (1472) cpu_start: ELF file SHA256:  df95be32982d8edb...[0m
+[0;32mI (1478) cpu_start: ESP-IDF:          v5.1.2-dirty[0m
+[0;32mI (1483) cpu_start: Min chip rev:     v0.0[0m
+[0;32mI (1488) cpu_start: Max chip rev:     v0.99 [0m
+[0;32mI (1493) cpu_start: Chip rev:         v0.2[0m
+[0;32mI (1498) heap_init: Initializing. RAM available for dynamic allocation:[0m
+[0;32mI (1505) heap_init: At 3FCACBE0 len 0003CB30 (242 KiB): DRAM[0m
+[0;32mI (1512) heap_init: At 3FCE9710 len 00005724 (21 KiB): STACK/DRAM[0m
+[0;32mI (1518) heap_init: At 3FCF0000 len 00008000 (32 KiB): DRAM[0m
+[0;32mI (1525) heap_init: At 600FE014 len 00001FD4 (7 KiB): RTCRAM[0m
+[0;32mI (1531) esp_psram: Adding pool of 8192K of PSRAM memory to heap allocator[0m
+[0;32mI (1539) spi_flash: detected chip: boya[0m
+[0;32mI (1543) spi_flash: flash io: dio[0m
+[0;32mI (1548) sleep: Configure to isolate all GPIO pins in sleep state[0m
+[0;32mI (1554) sleep: Enable automatic switching of GPIO sleep configuration[0m
+[0;32mI (1561) app_start: Starting scheduler on CPU0[0m
+[0;32mI (1566) app_start: Starting scheduler on CPU1[0m
+[0;32mI (1566) main_task: Started on CPU0[0m
+[0;32mI (1576) esp_psram: Reserving pool of 64K of internal memory for DMA/internal allocations[0m
+[0;32mI (1586) main_task: Calling app_main()[0m
+
+========== 智能枕头 v1.0 ==========
+
+[0;33mW (1596) app: boot reset_reason=1 free_heap=8598324 min_free_heap=8598324[0m
+ESP_ERROR_CHECK_WITHOUT_ABORT failed: esp_err_t 0x103 (ESP_ERR_INVALID_STATE) at 0x42014043
+file: "./main/screen_anim.c" line 755
+func: animation_task
+expression: avatar_storage_init()
+[0;33mW (2666) sensors: NTC1 invalid raw=0 voltage=0.000V[0m
+[FSR] force=[0.00, 0.00, 0.00, 0.00]N valid=[1, 1, 1, 1] pressure=0.00 kPa pressure_valid=1
+[0;33mW (4036) sensors: NTC1 invalid raw=0 voltage=0.000V[0m
+[FSR] force=[0.00, 0.00, 0.00, 0.00]N valid=[1, 1, 1, 1] pressure=0.00 kPa pressure_valid=1
+[0;33mW (5386) sensors: NTC1 invalid raw=0 voltage=0.000V[0m
+[FSR] force=[0.00, 0.00, 0.00, 0.00]N valid=[1, 1, 1, 1] pressure=0.00 kPa pressure_valid=1
+[0;33mW (6736) sensors: NTC1 invalid raw=0 voltage=0.000V[0m
+[FSR] force=[0.00, 0.00, 0.00, 0.00]N valid=[1, 1, 1, 1] pressure=0.00 kPa pressure_valid=1
+[snore] policy enabled=1 sleep=0 target=4.00 kPa
+[0;33mW (8086) sensors: NTC1 invalid raw=0 voltage=0.000V[0m
+[FSR] force=[0.00, 0.00, 0.00, 0.00]N valid=[1, 1, 1, 1] pressure=0.00 kPa pressure_valid=1
+[0;33mW (8536) sensors: NTC1 invalid raw=0 voltage=0.000V[0m
+[FSR] force=[0.00, 0.00, 0.00, 0.00]N valid=[1, 1, 1, 1] pressure=0.00 kPa pressure_valid=1
+[pressure] kPa=0.00 valid=1
+[snore] policy enabled=1 sleep=0 target=4.00 kPa
+MC Quantized wakenet9: wakenet9_tts2h12_nihaoxiaoan_3_0.621_0.625, tigger:v4, mode:0, p:0, (May 25 2026 15:51:00)
+wakenet9_tts2h12_nihaoxiaoan_3_0.621_0.625 set threshold for 1 word: 0.800000
+model ready: project=1062236 frame=32000 threshold=0.75 votes=8/10 clear=0.45
+[0;33mW (9886) sensors: NTC1 invalid raw=0 voltage=0.000V[0m
+[FSR] force=[0.00, 0.00, 0.00, 0.00]N valid=[1, 1, 1, 1] pressure=0.00 kPa pressure_valid=1
+[0;33mW (10536) sensors: NTC1 invalid raw=-1 voltage=-0.000V[0m
+[FSR] force=[0.00, 0.00, 0.00, 0.00]N valid=[1, 1, 1, 1] pressure=0.00 kPa pressure_valid=1
+[pressure] kPa=0.00 valid=1
+[就绪] 说 '你好小安' 唤醒
+
+[snore] policy enabled=1 sleep=0 target=4.00 kPa
+[0;33mW (11926) sensors: NTC1 invalid raw=0 voltage=0.000V[0m
+[FSR] force=[0.00, 0.00, 0.00, 0.00]N valid=[1, 1, 1, 1] pressure=0.00 kPa pressure_valid=1
+[0;33mW (12546) sensors: NTC1 invalid raw=0 voltage=0.000V[0m
+[FSR] force=[0.00, 0.00, 0.00, 0.00]N valid=[1, 1, 1, 1] pressure=0.00 kPa pressure_valid=1
+[pressure] kPa=0.00 valid=1
+[snore] policy enabled=1 sleep=0 target=4.00 kPa
+[0;33mW (13936) sensors: NTC1 invalid raw=-1 voltage=-0.000V[0m
+[FSR] force=[0.00, 0.00, 0.00, 0.00]N valid=[1, 1, 1, 1] pressure=0.00 kPa pressure_valid=1
+[0;33mW (14556) sensors: NTC1 invalid raw=0 voltage=0.000V[0m
+[FSR] force=[0.00, 0.00, 0.00, 0.00]N valid=[1, 1, 1, 1] pressure=0.00 kPa pressure_valid=1
+[pressure] kPa=0.00 valid=1
+[snore] policy enabled=1 sleep=0 target=4.00 kPa
+[0;33mW (15946) sensors: NTC1 invalid raw=0 voltage=0.000V[0m
+[FSR] force=[0.00, 0.00, 0.00, 0.00]N valid=[1, 1, 1, 1] pressure=0.00 kPa pressure_valid=1
+[0;33mW (16546) sensors: NTC1 invalid raw=0 voltage=0.000V[0m
+[FSR] force=[0.00, 0.00, 0.00, 0.00]N valid=[1, 1, 1, 1] pressure=0.00 kPa pressure_valid=1
+[pressure] kPa=0.00 valid=1
+[snore] policy enabled=1 sleep=0 target=4.00 kPa
+[0;33mW (17946) sensors: NTC1 invalid raw=0 voltage=0.000V[0m
+[FSR] force=[0.00, 0.00, 0.00, 0.00]N valid=[1, 1, 1, 1] pressure=0.00 kPa pressure_valid=1
+[0;33mW (18546) sensors: NTC1 invalid raw=0 voltage=0.000V[0m
+[FSR] force=[0.00, 0.00, 0.00, 0.00]N valid=[1, 1, 1, 1] pressure=0.00 kPa pressure_valid=1
+[pressure] kPa=0.00 valid=1
+[snore] policy enabled=1 sleep=0 target=4.00 kPa
+[0;33mW (19946) sensors: NTC1 invalid raw=0 voltage=0.000V[0m
+[FSR] force=[0.00, 0.00, 0.00, 0.00]N valid=[1, 1, 1, 1] pressure=0.00 kPa pressure_valid=1
+[0;33mW (20546) sensors: NTC1 invalid raw=0 voltage=0.000V[0m
+[FSR] force=[0.00, 0.00, 0.00, 0.00]N valid=[1, 1, 1, 1] pressure=0.00 kPa pressure_valid=1
+[pressure] kPa=0.00 valid=1
+[snore] policy enabled=1 sleep=0 target=4.00 kPa
+[0;33mW (21936) sensors: NTC1 invalid raw=0 voltage=0.000V[0m

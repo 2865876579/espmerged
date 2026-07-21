@@ -61,6 +61,7 @@ static const char *TAG = "app";
 
 static volatile bool s_wake_event = false;
 static volatile bool s_dialog_active = false;
+static bool s_sleep_greeting_consumed = false;
 static QueueHandle_t s_opus_upload_queue = NULL;
 static TaskHandle_t s_opus_upload_task = NULL;
 static char s_ai_persona[12] = "PRO";
@@ -1008,6 +1009,11 @@ static void handle_tjc_command(const char *cmd)
 
     ESP_LOGI(TAG, "TJC command: %s", cmd);
 
+    if (strstr(cmd, "STOP") != NULL || strstr(cmd, "HALT") != NULL) {
+        ws_client_request_pillow_command("halt", false);
+        return;
+    }
+
     if (strcmp(cmd, "PILLOW_CAL_UP_START") == 0 ||
         strcmp(cmd, "PILLOW_UP_START") == 0 ||
         strcmp(cmd, "PUMP_UP") == 0) {
@@ -1015,22 +1021,6 @@ static void handle_tjc_command(const char *cmd)
         if (!ws_client_request_pillow_command("tilt", true)) {
             ESP_LOGW(TAG, "TJC pump up start rejected");
         }
-        return;
-    }
-
-    if (strcmp(cmd, "PILLOW_CAL_UP_STOP") == 0 ||
-        strcmp(cmd, "PILLOW_UP_STOP") == 0 ||
-        strcmp(cmd, "PUMP_UP_STOP") == 0) {
-        ws_client_request_pillow_command("halt", false);
-        return;
-    }
-
-    if (strcmp(cmd, "PILLOW_CAL_DOWN_STOP") == 0 ||
-        strcmp(cmd, "PILLOW_DOWN_STOP") == 0 ||
-        strcmp(cmd, "PUMP_DOWN_STOP") == 0 ||
-        strcmp(cmd, "PILLOW_STOP") == 0 ||
-        strcmp(cmd, "PUMP_STOP") == 0) {
-        ws_client_request_pillow_command("halt", false);
         return;
     }
 
@@ -1063,14 +1053,9 @@ static void handle_tjc_command(const char *cmd)
         return;
     }
 
-    if (strcmp(cmd, "PILLOW_HALT") == 0) {
-        ws_client_request_pillow_command("halt", false);
-        return;
-    }
-
     if (strcmp(cmd, "PUMP_RELEASE") == 0) {
         ws_client_request_pillow_command(
-            "stop", false);
+            "release", false);
         return;
     }
 
@@ -1224,7 +1209,10 @@ void app_main(void)
 
         /* ★ 就寝检测：FSR 触发 → 无需唤醒词，主动问候 */
         if (!s_dialog_active && !tts_guard && sensor_person_just_laid_down()) {
-            run_sleep_greeting();
+            if (!s_sleep_greeting_consumed) {
+                s_sleep_greeting_consumed = true;
+                run_sleep_greeting();
+            }
         }
 
         if (!tts_guard && s_wake_event) {

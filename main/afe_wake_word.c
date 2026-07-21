@@ -483,7 +483,7 @@ int afe_wake_word_init(wake_word_callback_t cb)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
     // 7. 提高唤醒阈值，降低扬声器回放和环境声误唤醒概率。
-    s_afe_handle->set_wakenet_threshold(s_afe_data, 1, 0.5f);
+    s_afe_handle->set_wakenet_threshold(s_afe_data, 1, 0.65f);
 
     // 8. 查询 feed/fetch 参数
     s_feed_channels   = s_afe_handle->get_channel_num(s_afe_data);

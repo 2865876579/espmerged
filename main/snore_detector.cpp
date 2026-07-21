@@ -196,6 +196,7 @@ static void snore_task(void *arg)
 
     snore_vote_state_t votes = {};
     bool monitoring = false;
+    bool pillow_adjustment_active = false;
     uint32_t last_total = 0;
     int64_t last_adjust_us = 0;
 
@@ -203,14 +204,19 @@ static void snore_task(void *arg)
         snore_policy_snapshot_t policy;
         get_policy(&policy);
 
-        const bool should_monitor = policy.enabled &&
-                                    policy.sleep_active &&
+        const bool sleep_session_active = policy.enabled &&
+                                          policy.sleep_active &&
+                                          sensor_person_on_bed();
+        const bool should_monitor = sleep_session_active &&
                                     !policy.interaction_active &&
                                     !ws_client_is_tts_active() &&
-                                    !ws_client_is_tts_guard_active() &&
-                                    sensor_person_on_bed();
+                                    !ws_client_is_tts_guard_active();
 
         if (!should_monitor) {
+            if (!sleep_session_active && pillow_adjustment_active) {
+                ws_client_request_pillow_command("halt", false);
+                pillow_adjustment_active = false;
+            }
             if (monitoring) {
                 screen_anim_set_subtitle("睡眠", "鼾声监测已暂停");
                 reset_votes(&votes);
@@ -310,6 +316,7 @@ static void snore_task(void *arg)
                 last_adjust_us = now_us;
                 const bool adjusted = ws_client_request_pillow_tilt_to_kpa(
                     policy.target_kpa, "snore");
+                pillow_adjustment_active = adjusted;
                 screen_anim_set_subtitle(
                     "睡眠",
                     adjusted ? "检测到鼾声，已自动调整枕头"
@@ -325,10 +332,14 @@ static void snore_task(void *arg)
             }
         } else if (just_cleared) {
             screen_anim_set_subtitle("睡眠", "鼾声监测中");
-            const bool released = ws_client_request_pillow_recover_to_kpa(
-                0.0f, "snore_clear");
-            if (!released) {
-                ESP_LOGW(TAG, "snoring cleared but pillow release request failed");
+            if (pillow_adjustment_active) {
+                const bool released = ws_client_request_pillow_recover_to_kpa(
+                    0.0f, "snore_clear");
+                if (released) {
+                    pillow_adjustment_active = false;
+                } else {
+                    ESP_LOGW(TAG, "snoring cleared but pillow release request failed");
+                }
             }
             ESP_LOGI(TAG, "snoring cleared");
         }

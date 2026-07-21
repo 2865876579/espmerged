@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
 #include "freertos/task.h"
@@ -11,6 +12,7 @@
 #include "esp_heap_caps.h"
 #include "esp_mac.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_websocket_client.h"
 #include "esp_err.h"
 #include "cJSON.h"
@@ -52,6 +54,7 @@ static QueueHandle_t s_deferred_send_queue = NULL;
 static TaskHandle_t s_deferred_send_task = NULL;
 static portMUX_TYPE s_event_spinlock = portMUX_INITIALIZER_UNLOCKED;
 #define WS_FRAGMENT_MAX_BYTES 16384
+#define AUDIO_OUTPUT_GAIN 0.44f
 static uint8_t *s_ws_fragment_buf = NULL;
 static size_t s_ws_fragment_len = 0;
 static size_t s_ws_fragment_total = 0;
@@ -143,7 +146,7 @@ static void start_avatar_download(const char *url, size_t size, uint32_t crc32)
 }
 
 // ── 气泵命令（独立 FreeRTOS 任务，不阻塞 audio/websocket）──
-typedef enum { PUMP_NONE, PUMP_TILT, PUMP_RECOVER, PUMP_STOP, PUMP_HALT,
+typedef enum { PUMP_NONE, PUMP_TILT, PUMP_RECOVER, PUMP_RELEASE, PUMP_HALT,
                PUMP_TILT_TO_KPA, PUMP_RECOVER_TO_KPA,
                PUMP_TILT_CONTINUOUS, PUMP_RECOVER_CONTINUOUS } pump_cmd_t;
 typedef struct {
@@ -156,6 +159,13 @@ static TaskHandle_t        s_pump_task = NULL;
 
 #define PILLOW_PRESSURE_MIN_KPA 0.0f
 #define PILLOW_PRESSURE_MAX_KPA 10.0f
+#define PILLOW_PRESSURE_TOLERANCE_KPA 0.10f
+#define PILLOW_ADJUST_TIMEOUT_MS 120000
+#define PILLOW_RELEASE_TIMEOUT_MS 8000
+#define PILLOW_RELEASE_STABLE_SAMPLES 10
+#define PILLOW_MANUAL_MAX_SECONDS 2
+#define PILLOW_MANUAL_MAX_RUN_MS 2000
+#define PILLOW_MIN_PROGRESS_KPA 0.03f
 
 static float clamp_pillow_pressure_kpa(float value)
 {
@@ -215,11 +225,11 @@ bool ws_client_request_pillow_command(const char *action, bool continuous)
         return submit_pump_request(continuous ? PUMP_RECOVER_CONTINUOUS : PUMP_RECOVER,
                                    continuous ? 0 : 3, 0.0f);
     }
-    if (strcmp(action, "stop") == 0) {
-        return submit_pump_request(PUMP_STOP, 0, 0.0f);
-    }
-    if (strcmp(action, "halt") == 0) {
+    if (strcmp(action, "stop") == 0 || strcmp(action, "halt") == 0) {
         return submit_pump_request(PUMP_HALT, 0, 0.0f);
+    }
+    if (strcmp(action, "release") == 0) {
+        return submit_pump_request(PUMP_RELEASE, 0, 0.0f);
     }
     return false;
 }
@@ -328,14 +338,15 @@ static bool pump_consume_interrupt(void)
         valve_close();
         return true;
     }
-    if (pending == PUMP_STOP) {
+    if (pending == PUMP_RELEASE) {
         xQueueReceive(s_pump_queue, &request, 0);
         emergency_release();
         vTaskDelay(pdMS_TO_TICKS(3000));
         valve_close();
         return true;
     }
-    return false;
+    /* Leave replacement requests queued so the task can process them next. */
+    return true;
 }
 
 static void pump_wait_interruptible(int duration_sec)
@@ -370,123 +381,158 @@ static void pump_task(void *arg) {
             valve_open(); pump_wait_interruptible(dur); valve_close();
         } else if (cmd == PUMP_TILT_CONTINUOUS) {
             if (pump_start()) {
-                while (!pump_consume_interrupt()) {
+                const int64_t deadline_us = esp_timer_get_time() +
+                    (int64_t)PILLOW_MANUAL_MAX_RUN_MS * 1000LL;
+                while (esp_timer_get_time() < deadline_us &&
+                       !pump_consume_interrupt()) {
                     vTaskDelay(pdMS_TO_TICKS(100));
                 }
                 pump_stop();
             }
         } else if (cmd == PUMP_RECOVER_CONTINUOUS) {
             if (valve_open()) {
-                while (!pump_consume_interrupt()) {
+                const int64_t deadline_us = esp_timer_get_time() +
+                    (int64_t)PILLOW_MANUAL_MAX_RUN_MS * 1000LL;
+                while (esp_timer_get_time() < deadline_us &&
+                       !pump_consume_interrupt()) {
                     vTaskDelay(pdMS_TO_TICKS(100));
                 }
                 valve_close();
             }
         } else if (cmd == PUMP_HALT) {
             pump_stop(); valve_close();
-        } else if (cmd == PUMP_STOP) {
+        } else if (cmd == PUMP_RELEASE) {
             emergency_release(); vTaskDelay(pdMS_TO_TICKS(3000)); valve_close();
         } else if (cmd == PUMP_TILT_TO_KPA || cmd == PUMP_RECOVER_TO_KPA) {
-            // ★ 闭环+PWM比例调速：粗充(100%) → 均压 → 细调(50%/25%)
             float curr = sensor_read_pressure_kpa();
-            printf("[pressure] current=%.2f kPa\n", curr);
-
-            if (curr < 0) { printf("[pressure] sensor invalid\n"); continue; }
-
-            bool need_inflate  = (curr < target - 0.05f);
-            bool need_deflate  = (curr > target + 0.05f);
-
-            if (!need_inflate && !need_deflate) {
-                s_last_pump_target = target; s_last_pump_result = curr;
-                s_last_pump_done = true; s_last_pump_inflate = need_inflate;
+            printf("[pressure] current=%.2f kPa target=%.2f kPa\n", curr, target);
+            if (curr < 0) {
+                printf("[pressure] sensor invalid\n");
                 continue;
             }
 
-            /* 动态读数虚高：用 target+1.0kPa 做刹车点，抵消气流误差 */
-            int retries = 15;
+            const bool need_inflate = curr < target - PILLOW_PRESSURE_TOLERANCE_KPA;
+            const bool need_deflate = curr > target + PILLOW_PRESSURE_TOLERANCE_KPA;
             bool interrupted = false;
-            bool safety_stop = false;
-            while (retries-- > 0) {
-                if (pump_consume_interrupt()) {
-                    interrupted = true;
-                    break;
-                }
-                float stop_at;
-                if (need_inflate) {
-                    stop_at = clamp_pillow_pressure_kpa(target + 1.0f);
-                } else if (target <= 0.05f) {
-                    /* Zero pressure is limited by the sensor's floor. */
-                    stop_at = 0.05f;
-                } else {
-                    stop_at = clamp_pillow_pressure_kpa(target - 1.0f);
-                }
+            bool stalled = false;
+            bool reached = !need_inflate && !need_deflate;
+            const int64_t deadline_us = esp_timer_get_time() +
+                (int64_t)PILLOW_ADJUST_TIMEOUT_MS * 1000LL;
 
-                if (need_inflate) {
-                    pump_set_duty(100);
-                    if (!pump_start()) { pump_clear_cooldown(); if(!pump_start()) break; }
-                    int to = 300;
-                    while (to-- > 0) {
-                        if (pump_consume_interrupt()) { interrupted = true; break; }
-                        vTaskDelay(pdMS_TO_TICKS(100));
-                        if (pump_consume_interrupt()) { interrupted = true; break; }
-                        curr = sensor_read_pressure_kpa();
-                        if (pump_run_ms() >= PUMP_MAX_RUN_MS) {
-                            safety_stop = true;
+            if (need_inflate) {
+                while (!reached && esp_timer_get_time() < deadline_us) {
+                    if (pump_consume_interrupt()) {
+                        interrupted = true;
+                        break;
+                    }
+
+                    while (!pump_start() && esp_timer_get_time() < deadline_us) {
+                        if (pump_consume_interrupt()) {
+                            interrupted = true;
                             break;
                         }
-                        if (curr >= stop_at || curr < 0) break;
+                        vTaskDelay(pdMS_TO_TICKS(100));
+                    }
+                    if (interrupted || !pump_is_running()) break;
+
+                    const float segment_start = curr;
+                    const float gap = target - curr;
+                    pump_set_duty(gap > 0.6f ? 100 : (gap > 0.25f ? 60 : 35));
+                    while (pump_run_ms() < PUMP_MAX_RUN_MS) {
+                        vTaskDelay(pdMS_TO_TICKS(100));
+                        if (pump_consume_interrupt()) {
+                            interrupted = true;
+                            break;
+                        }
+                        curr = sensor_read_pressure_kpa();
+                        if (curr < 0 || curr >= target - 0.03f) break;
                     }
                     pump_stop();
-                } else {
-                    valve_open();
-                    int to = 300;
-                    while (to-- > 0) {
-                        if (pump_consume_interrupt()) { interrupted = true; break; }
+                    if (interrupted || curr < 0) break;
+
+                    for (int i = 0; i < 5; i++) {
                         vTaskDelay(pdMS_TO_TICKS(100));
-                        if (pump_consume_interrupt()) { interrupted = true; break; }
-                        curr = sensor_read_pressure_kpa();
-                        if (curr <= stop_at || curr < 0) break;
+                        if (pump_consume_interrupt()) {
+                            interrupted = true;
+                            break;
+                        }
                     }
-                    valve_close();
+                    if (interrupted) break;
+                    curr = sensor_read_pressure_kpa();
+                    printf("[pressure] settled=%.2f kPa target=%.2f kPa\n", curr, target);
+                    if (curr < 0) break;
+                    reached = curr >= target - PILLOW_PRESSURE_TOLERANCE_KPA;
+                    if (!reached && curr < segment_start + PILLOW_MIN_PROGRESS_KPA) {
+                        stalled = true;
+                        ESP_LOGE(TAG,
+                                 "pressure did not rise: start=%.2f settled=%.2f; stop pump",
+                                 (double)segment_start, (double)curr);
+                        break;
+                    }
+                    if (!reached) {
+                        for (int i = 0; i < PUMP_COOLDOWN_MS / 100; i++) {
+                            vTaskDelay(pdMS_TO_TICKS(100));
+                            if (pump_consume_interrupt()) {
+                                interrupted = true;
+                                break;
+                            }
+                        }
+                    }
                 }
-                if (interrupted) {
-                    break;
+                pump_stop();
+            } else if (need_deflate) {
+                const bool release_fully = target <= 0.05f;
+                const int64_t release_deadline_us = esp_timer_get_time() +
+                    (int64_t)(release_fully ? PILLOW_RELEASE_TIMEOUT_MS
+                                           : PILLOW_ADJUST_TIMEOUT_MS) * 1000LL;
+                float previous = curr;
+                int stable_samples = 0;
+                valve_open();
+                while (esp_timer_get_time() < release_deadline_us) {
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    if (pump_consume_interrupt()) {
+                        interrupted = true;
+                        break;
+                    }
+                    curr = sensor_read_pressure_kpa();
+                    if (curr < 0) break;
+                    if (!release_fully &&
+                        curr <= target + PILLOW_PRESSURE_TOLERANCE_KPA) {
+                        reached = true;
+                        break;
+                    }
+                    if (fabsf(curr - previous) < 0.01f) {
+                        stable_samples++;
+                    } else {
+                        stable_samples = 0;
+                    }
+                    previous = curr;
+                    if (release_fully &&
+                        stable_samples >= PILLOW_RELEASE_STABLE_SAMPLES) {
+                        reached = true;
+                        break;
+                    }
                 }
-                if (safety_stop) {
-                    break;
-                }
+                valve_close();
+            }
 
-                /* 均压验证 */
-                vTaskDelay(pdMS_TO_TICKS(300));
-                if (pump_consume_interrupt()) {
-                    interrupted = true;
-                    break;
-                }
-                curr = sensor_read_pressure_kpa();
-                printf("[pressure] current=%.2f kPa\n", curr);
-                bool done = need_inflate ? (curr >= target)
-                                         : (curr <= target + 0.05f);
-                if (curr < 0 || done) { break; }
-                pump_clear_cooldown();
-            }
-            if (interrupted) {
-                continue;
-            }
-            if (safety_stop) {
-                continue;
-            }
-            // ★ 保存结果，供 read_sensors 读取
-            s_last_pump_target  = target;
-            s_last_pump_result  = curr;
+            pump_stop();
+            valve_close();
+            if (interrupted) continue;
+
+            s_last_pump_target = target;
+            s_last_pump_result = curr;
             s_last_pump_inflate = need_inflate;
-            s_last_pump_done    = true;
+            s_last_pump_done = true;
 
-            // ★ 回执
             char buf[256];
             snprintf(buf, sizeof(buf),
                 "{\"type\":\"pump_result\",\"action\":\"%s\","
-                "\"target_kpa\":%.2f,\"result_kpa\":%.2f}",
-                need_inflate ? "tilt_to" : "recover_to", target, curr);
+                "\"target_kpa\":%.2f,\"result_kpa\":%.2f,"
+                "\"reached\":%s,\"stalled\":%s}",
+                need_inflate ? "tilt_to" : "recover_to",
+                target, curr, reached ? "true" : "false",
+                stalled ? "true" : "false");
             ws_client_send_raw(buf);
         }
     }
@@ -778,8 +824,9 @@ static void audio_player_task(void *arg)
 
         // Mono → Stereo（MAX98357A 接收立体声，只取左声道也能响）
         for (int i = 0; i < samples; i++) {
-            stereo[i * 2]     = pcm[i];
-            stereo[i * 2 + 1] = pcm[i];
+            int16_t sample = (int16_t)((float)pcm[i] * AUDIO_OUTPUT_GAIN);
+            stereo[i * 2]     = sample;
+            stereo[i * 2 + 1] = sample;
         }
 
         // I2S 输出 —— 这个任务可以慢慢等 DMA 空间
@@ -1188,7 +1235,13 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     float target_kpa = has_target_kpa ? clamp_pillow_pressure_kpa((float)cJSON_GetNumberValue(target_item)) : 0.0f;
                     int dur = 0;
 
-                    if (has_target_kpa) {
+                    if (strcmp(action, "stop") == 0 || strcmp(action, "halt") == 0) {
+                        submit_pump_request(PUMP_HALT, 0, 0.0f);
+                        has_target_kpa = false;
+                    } else if (strcmp(action, "release") == 0) {
+                        submit_pump_request(PUMP_RELEASE, 0, 0.0f);
+                        has_target_kpa = false;
+                    } else if (has_target_kpa) {
                         // ★ 闭环模式：有目标气压，边充/放边读传感器，到位即停
                         if (strcmp(action, "tilt") == 0) {
                             submit_pump_request(PUMP_TILT_TO_KPA, 0, target_kpa);
@@ -1200,17 +1253,15 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                         cJSON *duration_item = cJSON_GetObjectItem(json, "duration_sec");
                         dur = cJSON_IsNumber(duration_item)
                                   ? duration_item->valueint : 3;
-                        if (dur < 1) dur = 3;
-                        if (dur > 600) dur = 600;
+                        if (dur < 1) dur = PILLOW_MANUAL_MAX_SECONDS;
+                        if (dur > PILLOW_MANUAL_MAX_SECONDS) {
+                            dur = PILLOW_MANUAL_MAX_SECONDS;
+                        }
 
                         if (strcmp(action, "tilt") == 0) {
                             submit_pump_request(PUMP_TILT, dur, 0.0f);
                         } else if (strcmp(action, "recover") == 0) {
                             submit_pump_request(PUMP_RECOVER, dur, 0.0f);
-                        } else if (strcmp(action, "stop") == 0) {
-                            submit_pump_request(PUMP_STOP, 0, 0.0f);
-                        } else if (strcmp(action, "halt") == 0) {
-                            submit_pump_request(PUMP_HALT, 0, 0.0f);
                         }
                     }
                     ESP_LOGI(TAG, "pillow_cmd action=%s target=%s%.2f duration=%d",

@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "driver/spi_master.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
@@ -25,6 +26,13 @@
 #define LCD_PIN_DC GPIO_NUM_42
 #define LCD_PIN_RST GPIO_NUM_16
 #define LCD_PIN_BK_LIGHT GPIO_NUM_2
+
+#define LCD_BACKLIGHT_TIMER LEDC_TIMER_1
+#define LCD_BACKLIGHT_CHANNEL LEDC_CHANNEL_1
+#define LCD_BACKLIGHT_PWM_HZ 20000
+#define LCD_BACKLIGHT_DUTY_PERCENT 70
+#define LCD_BACKLIGHT_DUTY_RES LEDC_TIMER_10_BIT
+#define LCD_BACKLIGHT_DUTY_MAX ((1U << 10) - 1U)
 
 #define RGB565_RED 0xF800
 #define RGB565_GREEN 0x07E0
@@ -143,8 +151,27 @@ static esp_err_t lcd_gpio_init(void)
 
 static esp_err_t lcd_backlight_init(void)
 {
-    gpio_set_level(LCD_PIN_BK_LIGHT, 1);
-    return ESP_OK;
+    const ledc_timer_config_t timer = {
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .duty_resolution = LCD_BACKLIGHT_DUTY_RES,
+        .timer_num = LCD_BACKLIGHT_TIMER,
+        .freq_hz = LCD_BACKLIGHT_PWM_HZ,
+        .clk_cfg = LEDC_AUTO_CLK,
+    };
+    ESP_RETURN_ON_ERROR(ledc_timer_config(&timer), TAG, "backlight timer config");
+
+    const uint32_t duty =
+        LCD_BACKLIGHT_DUTY_MAX * LCD_BACKLIGHT_DUTY_PERCENT / 100U;
+    const ledc_channel_config_t channel = {
+        .gpio_num = LCD_PIN_BK_LIGHT,
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel = LCD_BACKLIGHT_CHANNEL,
+        .intr_type = LEDC_INTR_DISABLE,
+        .timer_sel = LCD_BACKLIGHT_TIMER,
+        .duty = duty,
+        .hpoint = 0,
+    };
+    return ledc_channel_config(&channel);
 }
 
 static esp_err_t lcd_spi_init(void)
@@ -238,10 +265,11 @@ esp_err_t lcd_ili9488_init(void)
     ESP_RETURN_ON_ERROR(lcd_backlight_init(), TAG, "backlight init");
 
     s_lcd_ready = true;
-    ESP_LOGI(TAG, "ready: %dx%d SCK=%d MOSI=%d MISO=%d CS=%d DC=%d RST=%d LED=%d BK=on",
+    ESP_LOGI(TAG, "ready: %dx%d SCK=%d MOSI=%d MISO=%d CS=%d DC=%d RST=%d LED=%d BK=%d%%",
              LCD_ILI9488_H_RES, LCD_ILI9488_V_RES,
              LCD_PIN_SCLK, LCD_PIN_MOSI, LCD_PIN_MISO,
-             LCD_PIN_CS, LCD_PIN_DC, LCD_PIN_RST, LCD_PIN_BK_LIGHT);
+             LCD_PIN_CS, LCD_PIN_DC, LCD_PIN_RST, LCD_PIN_BK_LIGHT,
+             LCD_BACKLIGHT_DUTY_PERCENT);
     return ESP_OK;
 }
 

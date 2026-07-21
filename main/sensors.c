@@ -69,6 +69,7 @@ static const char *TAG = "sensors";
 #define PRESSURE_DIAGNOSTICS_ENABLED  0
 #define PRESSURE_DIAG_INTERVAL_CYCLES 5
 #define PRESSURE_DIAG_SAMPLES         4
+#define ADS_RETRY_INTERVAL_CYCLES     10
 
 /* MCP5010DP 鍒嗗帇 & 閲忕▼ */
 #define MCP_DIVIDER_TOP_OHM     4700.0f
@@ -78,6 +79,7 @@ static const char *TAG = "sensors";
 #define MCP_PRESSURE_MAX_KPA    10.0f
 #define MCP_OUTPUT_MIN_RATIO    0.04f
 #define MCP_OUTPUT_MAX_RATIO    0.94f
+#define MCP_ADC_MIN_VALID_V     0.02f
 
 /* NTC 10K 3950 on ADS1115-MCP A1: 3V3 -> NTC -> A1 -> 10k -> GND */
 #define NECK_NTC_SUPPLY_V       3.3f
@@ -128,6 +130,7 @@ static sht31_t   s_sht31;
 
 /* 灏辩华鏍囧織 */
 static bool s_mcp_ads_ready;
+static bool s_pressure_input_invalid_logged;
 #if PRESSURE_DIAGNOSTICS_ENABLED
 static uint32_t s_pressure_near_zero_streak;
 static uint32_t s_pressure_diag_cycle;
@@ -145,6 +148,7 @@ static bool s_ir_humidifier_known;
 static bool s_ir_air_conditioner_on;
 static bool s_ir_air_conditioner_known;
 static bool s_radar_ready;
+static uint8_t s_ads_retry_cycles;
 static volatile bool s_radar_person_gate;
 static uint8_t s_radar_heart_bpm;
 static uint8_t s_radar_breath_bpm;
@@ -742,10 +746,21 @@ static void read_mcp5010dp(sensor_data_t *out)
 #endif
         return;
     }
+    if (!isfinite(adc_v) || adc_v < MCP_ADC_MIN_VALID_V) {
+        if (!s_pressure_input_invalid_logged) {
+            ESP_LOGW(TAG, "pressure input invalid raw=%d voltage=%.4fV",
+                     raw, (double)adc_v);
+            s_pressure_input_invalid_logged = true;
+        }
+        return;
+    }
+    s_pressure_input_invalid_logged = false;
     float sensor_v = mcp_adc_to_sensor_voltage(adc_v);
     float kpa = mcp_voltage_to_pressure_kpa(sensor_v);
     out->pressure_kpa = kpa;
     out->pressure_valid = true;
+
+    if (s_usart_ready) usart_tjc_set_t7_pressure_kpa(kpa);
 
 #if PRESSURE_DIAGNOSTICS_ENABLED
     if (raw >= -1 && raw <= 1) {
@@ -765,7 +780,6 @@ static void read_mcp5010dp(sensor_data_t *out)
     }
 #endif
 
-    if (s_usart_ready) usart_tjc_set_t7_pressure_kpa(kpa);
 #if PRESSURE_DIAGNOSTICS_ENABLED
     ESP_LOGI(TAG,
              "pressure raw=%d ain0=%.4fV vout=%.4fV kpa=%.2f valid=1",
@@ -1002,6 +1016,24 @@ void sensor_task(void *arg)
     s_sensor_task_handle = xTaskGetCurrentTaskHandle();
 
     while (1) {
+        if (!s_mcp_ads_ready || !s_fsr_ads_ready) {
+            s_ads_retry_cycles++;
+            if (s_ads_retry_cycles >= ADS_RETRY_INTERVAL_CYCLES) {
+                s_ads_retry_cycles = 0;
+                if (!s_mcp_ads_ready) {
+                    s_mcp_ads_ready = init_result(
+                        "ADS1115-MCP retry", ads1115_init(&s_mcp_ads));
+                }
+                if (!s_fsr_ads_ready) {
+                    s_fsr_ads_ready = init_result(
+                        "ADS1115-FSR retry", ads1115_init(&s_fsr_ads));
+                    if (s_fsr_ads_ready) {
+                        calibrate_fsr_zero();
+                    }
+                }
+            }
+        }
+
         memset(&data, 0, sizeof(data));
 
         read_mcp5010dp(&data);
@@ -1146,6 +1178,7 @@ float sensor_read_pressure_kpa(void)
     esp_err_t err = read_ads_voltage(&s_mcp_ads, ADS1115_MUX_AIN0_GND, &raw, &adc_v);
     xSemaphoreGive(s_i2c0_mutex);
     if (err != ESP_OK) return -1.0f;
+    if (!isfinite(adc_v) || adc_v < MCP_ADC_MIN_VALID_V) return -1.0f;
     float kpa = mcp_voltage_to_pressure_kpa(mcp_adc_to_sensor_voltage(adc_v));
     if (s_usart_ready) usart_tjc_set_t7_pressure_kpa(kpa);
     return kpa;
