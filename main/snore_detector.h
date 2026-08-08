@@ -6,7 +6,7 @@
 extern "C" {
 #endif
 
-void snore_detector_start(void);
+bool snore_detector_start(void);
 void snore_detector_set_policy(bool enabled,
                                bool sleep_active,
                                float target_kpa,

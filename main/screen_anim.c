@@ -23,8 +23,9 @@
 #define LOWER_PARTICLE_H 190
 #define LOWER_PARTICLE_REFRESH_DIV 3
 #define LOWER_PARTICLE_WAVE_PERIOD 128
-#define ENABLE_AMBIENT_FX 0
+#define ENABLE_AMBIENT_FX 1
 #define ENABLE_AI_STATUS_PANEL 1
+#define ANIMATION_LOOP_MS 80
 #define STATUS_PANEL_X 0
 #define STATUS_PANEL_Y 426
 #define STATUS_PANEL_W LCD_ILI9488_H_RES
@@ -36,17 +37,34 @@
 #define SUBTITLE_GLYPH_STEP_X 15
 #define SUBTITLE_MARGIN_X 10
 
+// The open/closed assets differ only inside this rectangle.  Keep the whole
+// tilted two-eye area in one SPI transaction; splitting it into overlapping
+// hair/face rectangles makes one half of an eye visibly update first.
+#define AVATAR_BLINK_X 134
+#define AVATAR_BLINK_Y 106
+#define AVATAR_BLINK_W 111
+#define AVATAR_BLINK_H 61
+#define AVATAR_BLINK_BUFFER_BYTES ((size_t)AVATAR_BLINK_W * AVATAR_BLINK_H * 3)
+#define DIRECT_DRAW_BUFFER_BYTES ((size_t)LCD_ILI9488_H_RES * DIRECT_DRAW_LINES * 3)
+#define TX_BUFFER_BYTES \
+    (AVATAR_BLINK_BUFFER_BYTES > DIRECT_DRAW_BUFFER_BYTES \
+         ? AVATAR_BLINK_BUFFER_BYTES \
+         : DIRECT_DRAW_BUFFER_BYTES)
+
 #if ENABLE_AMBIENT_FX
 #define AMBIENT_TILE_MAX 48
-#define AMBIENT_WAVE_PERIOD 128
-#define AMBIENT_FX_PER_STEP 2
+#define AMBIENT_WAVE_PERIOD 16
+#define AMBIENT_FX_PER_STEP 4
 #endif
 
 static const char *TAG = "screen_anim";
 static TaskHandle_t s_animation_task_handle;
 
 static const uint16_t s_frame_durations_ms[AVATAR_HEAD_FRAME_COUNT] = {
-    300, 80, 80, 80, 100, 90, 70, 80, 90, 120, 170, 420,
+    // Use clean open/closed artwork only. At 320x480, generated in-between lids
+    // create double eyelashes and iris smearing, while a real blink is fast enough
+    // that the two-state transition looks natural and remains artifact-free.
+    600, 160, 200, 200, 200, 200, 200, 200, 200, 200, 200, 300,
 };
 
 static uint8_t *s_tx_buf;
@@ -57,8 +75,13 @@ static inline const uint8_t *avatar_base_pixels(void)
 }
 
 static portMUX_TYPE s_subtitle_lock = portMUX_INITIALIZER_UNLOCKED;
-static char s_subtitle_speaker[SUBTITLE_SPEAKER_BYTES] = "小安";
-static char s_subtitle_text[SUBTITLE_TEXT_BYTES] = "你好，我在听";
+// Keep the source representation ASCII-only so Windows code-page conversions
+// cannot turn the UTF-8 defaults into mojibake before firmware compilation.
+static char s_subtitle_speaker[SUBTITLE_SPEAKER_BYTES] =
+    "\xE5\xB0\x8F\xE5\xAE\x89";  // 小安
+static char s_subtitle_text[SUBTITLE_TEXT_BYTES] =
+    "\xE4\xBD\xA0\xE5\xA5\xBD\xEF\xBC\x8C"
+    "\xE6\x88\x91\xE5\x9C\xA8\xE5\x90\xAC";  // 你好，我在听
 static volatile uint32_t s_subtitle_version = 1;
 static TickType_t s_subtitle_expire_tick;
 
@@ -269,16 +292,19 @@ typedef struct {
 } ambient_fx_t;
 
 static const ambient_fx_t s_ambient_fx[] = {
-    {.x = 2, .y = 118, .size = 34, .r = 255, .g = 238, .b = 214, .phase = 0, .drift_x = 0, .drift_y = 1, .strength = 20, .kind = AMBIENT_FX_BREATH},
-    {.x = 284, .y = 286, .size = 34, .r = 255, .g = 236, .b = 210, .phase = 44, .drift_x = 0, .drift_y = -1, .strength = 18, .kind = AMBIENT_FX_BREATH},
-    {.x = 16, .y = 78, .size = 7, .r = 255, .g = 246, .b = 220, .phase = 8, .drift_x = 3, .drift_y = 2, .strength = 96, .kind = AMBIENT_FX_PARTICLE},
-    {.x = 296, .y = 102, .size = 6, .r = 255, .g = 232, .b = 204, .phase = 22, .drift_x = -2, .drift_y = 3, .strength = 86, .kind = AMBIENT_FX_PARTICLE},
-    {.x = 28, .y = 226, .size = 8, .r = 255, .g = 242, .b = 218, .phase = 36, .drift_x = 2, .drift_y = -3, .strength = 82, .kind = AMBIENT_FX_PARTICLE},
-    {.x = 288, .y = 220, .size = 7, .r = 255, .g = 238, .b = 210, .phase = 50, .drift_x = -2, .drift_y = 2, .strength = 90, .kind = AMBIENT_FX_PARTICLE},
-    {.x = 56, .y = 332, .size = 9, .r = 255, .g = 248, .b = 226, .phase = 64, .drift_x = 3, .drift_y = -2, .strength = 76, .kind = AMBIENT_FX_PARTICLE},
-    {.x = 250, .y = 356, .size = 8, .r = 255, .g = 236, .b = 212, .phase = 78, .drift_x = -3, .drift_y = -2, .strength = 84, .kind = AMBIENT_FX_PARTICLE},
-    {.x = 98, .y = 420, .size = 6, .r = 255, .g = 248, .b = 228, .phase = 92, .drift_x = 2, .drift_y = -3, .strength = 78, .kind = AMBIENT_FX_PARTICLE},
-    {.x = 198, .y = 410, .size = 7, .r = 255, .g = 238, .b = 214, .phase = 110, .drift_x = -2, .drift_y = -2, .strength = 80, .kind = AMBIENT_FX_PARTICLE},
+    // Window stars: independent phases create a calm, non-synchronized twinkle.
+    {.x = 14, .y = 16, .size = 5, .r = 216, .g = 232, .b = 255, .phase = 0, .drift_x = 0, .drift_y = 0, .strength = 150, .kind = AMBIENT_FX_PARTICLE},
+    {.x = 33, .y = 29, .size = 5, .r = 224, .g = 236, .b = 255, .phase = 3, .drift_x = 0, .drift_y = 0, .strength = 132, .kind = AMBIENT_FX_PARTICLE},
+    {.x = 73, .y = 13, .size = 6, .r = 204, .g = 226, .b = 255, .phase = 6, .drift_x = 0, .drift_y = 0, .strength = 144, .kind = AMBIENT_FX_PARTICLE},
+    {.x = 92, .y = 36, .size = 5, .r = 228, .g = 240, .b = 255, .phase = 9, .drift_x = 0, .drift_y = 0, .strength = 126, .kind = AMBIENT_FX_PARTICLE},
+    {.x = 16, .y = 64, .size = 6, .r = 206, .g = 228, .b = 255, .phase = 12, .drift_x = 0, .drift_y = 0, .strength = 138, .kind = AMBIENT_FX_PARTICLE},
+    {.x = 82, .y = 69, .size = 5, .r = 222, .g = 236, .b = 255, .phase = 15, .drift_x = 0, .drift_y = 0, .strength = 148, .kind = AMBIENT_FX_PARTICLE},
+    {.x = 26, .y = 102, .size = 5, .r = 210, .g = 230, .b = 255, .phase = 5, .drift_x = 0, .drift_y = 0, .strength = 122, .kind = AMBIENT_FX_PARTICLE},
+    {.x = 73, .y = 112, .size = 6, .r = 224, .g = 238, .b = 255, .phase = 11, .drift_x = 0, .drift_y = 0, .strength = 136, .kind = AMBIENT_FX_PARTICLE},
+
+    // Warm bedside-lamp breathing and the blue crescent hairpin status glow.
+    {.x = 272, .y = 118, .size = 48, .r = 255, .g = 188, .b = 92, .phase = 1, .drift_x = 0, .drift_y = 0, .strength = 24, .kind = AMBIENT_FX_BREATH},
+    {.x = 140, .y = 62, .size = 28, .r = 70, .g = 205, .b = 255, .phase = 8, .drift_x = 0, .drift_y = 0, .strength = 38, .kind = AMBIENT_FX_BREATH},
 };
 
 enum {
@@ -324,46 +350,35 @@ static esp_err_t draw_rgb666_rect(int x, int y, int w, int h,
 }
 
 
-typedef struct {
-    int x;
-    int y;
-    int w;
-    int h;
-} avatar_dirty_rect_t;
-
-static const avatar_dirty_rect_t s_avatar_dirty_rects[] = {
-    // top hair + bangs
-    {.x = 90, .y = 38, .w = 130, .h = 74},
-    // left loose hair
-    {.x = 48, .y = 76, .w = 116, .h = 132},
-    // right wind-blown hair
-    {.x = 166, .y = 62, .w = 114, .h = 174},
-    // clean blink patch
-    {.x = 124, .y = 60, .w = 76, .h = 42},
-};
-
 static esp_err_t draw_avatar_frame_regions(uint32_t frame)
 {
     if (frame >= AVATAR_HEAD_FRAME_COUNT) {
         frame = 0;
     }
+
     const uint8_t *frame_pixels = avatar_head_rgb666_frames[frame];
-    for (size_t i = 0; i < sizeof(s_avatar_dirty_rects) / sizeof(s_avatar_dirty_rects[0]); i++) {
-        const avatar_dirty_rect_t *r = &s_avatar_dirty_rects[i];
-        int sx = r->x - AVATAR_HEAD_X;
-        int sy = r->y - AVATAR_HEAD_Y;
-        if (sx < 0 || sy < 0 || sx + r->w > AVATAR_HEAD_W || sy + r->h > AVATAR_HEAD_H) {
-            ESP_LOGW(TAG, "avatar dirty rect %u out of range", (unsigned)i);
-            continue;
-        }
-        const uint8_t *src = frame_pixels + (((size_t)sy * AVATAR_HEAD_W + sx) * 3);
-        esp_err_t err = draw_rgb666_rect(r->x, r->y, r->w, r->h,
-                                         src, AVATAR_HEAD_W, UINT32_MAX);
-        if (err != ESP_OK) {
-            return err;
-        }
+    const int sx = AVATAR_BLINK_X - AVATAR_HEAD_X;
+    const int sy = AVATAR_BLINK_Y - AVATAR_HEAD_Y;
+    if (sx < 0 || sy < 0 ||
+        sx + AVATAR_BLINK_W > AVATAR_HEAD_W ||
+        sy + AVATAR_BLINK_H > AVATAR_HEAD_H) {
+        ESP_LOGE(TAG, "atomic blink rectangle out of range");
+        return ESP_ERR_INVALID_SIZE;
     }
-    return ESP_OK;
+
+    // Pack the strided head crop into one contiguous DMA buffer.  A single
+    // CASET/RASET/RAMWR sequence then updates both eyes without an intermediate
+    // half-open state being shown on the LCD.
+    for (int row = 0; row < AVATAR_BLINK_H; row++) {
+        const uint8_t *src = frame_pixels +
+                             (((size_t)(sy + row) * AVATAR_HEAD_W + sx) * 3);
+        uint8_t *dst = s_tx_buf + ((size_t)row * AVATAR_BLINK_W * 3);
+        memcpy(dst, src, (size_t)AVATAR_BLINK_W * 3);
+    }
+
+    return lcd_ili9488_draw_rgb666_image(AVATAR_BLINK_X, AVATAR_BLINK_Y,
+                                         AVATAR_BLINK_W, AVATAR_BLINK_H,
+                                         s_tx_buf);
 }
 
 #if ENABLE_AI_STATUS_PANEL
@@ -754,7 +769,7 @@ static void animation_task(void *arg)
 
     ESP_ERROR_CHECK_WITHOUT_ABORT(avatar_storage_init());
 
-    s_tx_buf = heap_caps_malloc(LCD_ILI9488_H_RES * DIRECT_DRAW_LINES * 3,
+    s_tx_buf = heap_caps_malloc(TX_BUFFER_BYTES,
                                 MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     if (!s_tx_buf) {
         ESP_LOGE(TAG, "frame tx buffer allocation failed");
@@ -769,12 +784,16 @@ static void animation_task(void *arg)
                                                   LCD_ILI9488_H_RES,
                                                   UINT32_MAX));
 #if ENABLE_AMBIENT_FX
-    draw_ambient_frame(0);
+    if (!avatar_storage_custom_active()) {
+        draw_ambient_frame(0);
+    }
 #endif
 
     size_t frame = 0;
     uint32_t animation_tick = 0;
     uint32_t drawn_avatar_version = avatar_storage_get_version();
+    TickType_t next_frame_tick = xTaskGetTickCount() +
+                                 pdMS_TO_TICKS(s_frame_durations_ms[frame]);
 #if ENABLE_AMBIENT_FX
     size_t ambient_cursor = 0;
 #endif
@@ -794,31 +813,48 @@ static void animation_task(void *arg)
                                                           avatar_base_pixels(),
                                                           LCD_ILI9488_H_RES,
                                                           UINT32_MAX));
+#if ENABLE_AMBIENT_FX
+            if (!avatar_storage_custom_active()) {
+                memset(s_ambient_ticks, 0, sizeof(s_ambient_ticks));
+                ambient_cursor = 0;
+                draw_ambient_frame(0);
+            }
+#endif
 #if ENABLE_AI_STATUS_PANEL
             ESP_ERROR_CHECK_WITHOUT_ABORT(draw_status_panel(animation_tick));
             drawn_subtitle_version = s_subtitle_version;
 #endif
+            frame = 0;
+            next_frame_tick = xTaskGetTickCount() +
+                              pdMS_TO_TICKS(s_frame_durations_ms[frame]);
             drawn_avatar_version = current_avatar_version;
         }
 
+        const bool built_in_avatar = !avatar_storage_custom_active();
+
 #if ENABLE_AMBIENT_FX
         size_t ambient_indices[AMBIENT_FX_PER_STEP];
-        for (size_t i = 0; i < AMBIENT_FX_PER_STEP; i++) {
-            size_t idx = (ambient_cursor + i) % AMBIENT_FX_COUNT;
-            ambient_indices[i] = idx;
-            esp_err_t restore_err = restore_ambient_fx(&s_ambient_fx[idx], s_ambient_ticks[idx]);
-            if (restore_err != ESP_OK) {
-                ESP_LOGW(TAG, "ambient restore %u failed: %s", (unsigned)idx, esp_err_to_name(restore_err));
+        if (built_in_avatar) {
+            for (size_t i = 0; i < AMBIENT_FX_PER_STEP; i++) {
+                size_t idx = (ambient_cursor + i) % AMBIENT_FX_COUNT;
+                ambient_indices[i] = idx;
+                esp_err_t restore_err = restore_ambient_fx(&s_ambient_fx[idx], s_ambient_ticks[idx]);
+                if (restore_err != ESP_OK) {
+                    ESP_LOGW(TAG, "ambient restore %u failed: %s", (unsigned)idx, esp_err_to_name(restore_err));
+                }
             }
         }
 #endif
 
         esp_err_t err = ESP_OK;
-        if (!avatar_storage_custom_active()) {
+        TickType_t now = xTaskGetTickCount();
+        if (built_in_avatar && (int32_t)(now - next_frame_tick) >= 0) {
+            frame = (frame + 1) % AVATAR_HEAD_FRAME_COUNT;
             err = draw_avatar_frame_regions(frame);
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "draw frame %u failed: %s", (unsigned)frame, esp_err_to_name(err));
             }
+            next_frame_tick = now + pdMS_TO_TICKS(s_frame_durations_ms[frame]);
         }
 
 #if ENABLE_LOWER_PARTICLES
@@ -850,27 +886,28 @@ static void animation_task(void *arg)
 #endif
 
 #if ENABLE_AMBIENT_FX
-        for (size_t i = 0; i < AMBIENT_FX_PER_STEP; i++) {
-            size_t idx = ambient_indices[i];
-            uint32_t next_tick = s_ambient_ticks[idx] + 1;
-            esp_err_t ambient_err = draw_ambient_fx(&s_ambient_fx[idx], next_tick);
-            if (ambient_err != ESP_OK) {
-                ESP_LOGW(TAG, "ambient fx %u failed: %s", (unsigned)idx, esp_err_to_name(ambient_err));
+        if (built_in_avatar) {
+            for (size_t i = 0; i < AMBIENT_FX_PER_STEP; i++) {
+                size_t idx = ambient_indices[i];
+                uint32_t next_tick = s_ambient_ticks[idx] + 1;
+                esp_err_t ambient_err = draw_ambient_fx(&s_ambient_fx[idx], next_tick);
+                if (ambient_err != ESP_OK) {
+                    ESP_LOGW(TAG, "ambient fx %u failed: %s", (unsigned)idx, esp_err_to_name(ambient_err));
+                }
+                s_ambient_ticks[idx] = next_tick;
             }
-            s_ambient_ticks[idx] = next_tick;
+            ambient_cursor = (ambient_cursor + AMBIENT_FX_PER_STEP) % AMBIENT_FX_COUNT;
         }
-        ambient_cursor = (ambient_cursor + AMBIENT_FX_PER_STEP) % AMBIENT_FX_COUNT;
 #endif
 
         TickType_t elapsed = xTaskGetTickCount() - start;
-        TickType_t duration = pdMS_TO_TICKS(s_frame_durations_ms[frame]);
-        if (elapsed < duration) {
-            vTaskDelay(duration - elapsed);
+        TickType_t loop_delay = pdMS_TO_TICKS(ANIMATION_LOOP_MS);
+        if (elapsed < loop_delay) {
+            vTaskDelay(loop_delay - elapsed);
         } else {
             vTaskDelay(1);
         }
 
-        frame = (frame + 1) % AVATAR_HEAD_FRAME_COUNT;
         animation_tick++;
     }
 }

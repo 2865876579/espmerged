@@ -36,6 +36,15 @@ bool afe_capture_seen_speech(void);
 /** 本轮录音是否被 VAD 判定包含语音 */
 bool afe_capture_had_speech(void);
 
+/**
+ * 只在扬声器播放期间启用本地停止口令识别。
+ * MultiNet 在 AFE/AEC 输出上运行，不依赖云端 STT，因此不会把
+ * 小安自己的播报误当成用户说话。
+ */
+void afe_set_playback_stop_detection(bool enabled);
+bool afe_consume_playback_stop_detected(void);
+bool afe_playback_stop_is_available(void);
+
 #ifdef __cplusplus
 }
 #endif

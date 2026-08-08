@@ -25,6 +25,7 @@
 #include "sensors.h"
 #include "usart.h"
 #include "snore_detector.h"
+#include "monitor_log.h"
 
 /* ★ 安全提示：WiFi 凭证不应硬编码在源码中。
  *   生产版本请改用 NVS（wifi_manager）或 sdkconfig.defaults 中的 CONFIG_EXAMPLE_WIFI_SSID。
@@ -43,6 +44,7 @@
 #define OPUS_UPLOAD_FAILED 2
 #define OPUS_STREAM_RESTART_DELAY_MS 250
 #define REC_MAX_DURATION_MS 6000
+#define REC_BARGE_MAX_DURATION_MS 2500
 
 #define WAKE_TRIGGER_TEXT "__wake__"
 #define WS_READY_TIMEOUT_MS 10000
@@ -60,6 +62,7 @@
 static const char *TAG = "app";
 
 static volatile bool s_wake_event = false;
+static volatile bool s_playback_wake_stop_requested = false;
 static volatile bool s_dialog_active = false;
 static bool s_sleep_greeting_consumed = false;
 static QueueHandle_t s_opus_upload_queue = NULL;
@@ -72,6 +75,7 @@ typedef enum {
     RECORD_SENT,
     RECORD_NO_SPEECH,
     RECORD_FAILED,
+    RECORD_STOP_COMMAND,
 } record_result_t;
 
 typedef enum {
@@ -80,6 +84,12 @@ typedef enum {
     TURN_TIMEOUT,
     TURN_WS_LOST,
 } turn_wait_result_t;
+
+typedef enum {
+    PLAYBACK_BARGE_CONTINUE,
+    PLAYBACK_BARGE_STOPPED,
+    PLAYBACK_BARGE_WS_LOST,
+} playback_barge_result_t;
 
 typedef enum {
     OPUS_UPLOAD_BUFFERED = 0,
@@ -111,6 +121,55 @@ static void send_pending_tts_playback_ack(void)
 }
 
 static record_result_t record_and_send(bool music_barge_in);
+
+static playback_barge_result_t listen_for_playback_stop(void)
+{
+    afe_set_playback_stop_detection(true);
+    record_result_t barge = record_and_send(true);
+    afe_set_playback_stop_detection(false);
+    // 处理唤醒回调恰好发生在录音收尾和上面最后一次轮询
+    // 之间的竞态，同时不让事件残留到下一次 TTS。
+    if (barge != RECORD_STOP_COMMAND
+        && s_playback_wake_stop_requested
+        && ws_client_is_tts_active()) {
+        barge = RECORD_STOP_COMMAND;
+    }
+    s_playback_wake_stop_requested = false;
+    if (barge == RECORD_STOP_COMMAND) {
+        // 先在设备端清空播放队列，再通知云端取消生成。
+        // 这样停止不受 WebSocket 往返延迟影响。
+        ws_client_stop_tts_now();
+        ws_client_send_raw(
+            "{\"type\":\"playback_stop\",\"reason\":\"offline_stop_command\"}");
+        printf("[语音] 识别到停止口令，已停止当前播报\n");
+        return PLAYBACK_BARGE_STOPPED;
+    }
+    if (barge == RECORD_FAILED && !ws_client_is_connected()) {
+        return PLAYBACK_BARGE_WS_LOST;
+    }
+    if (barge != RECORD_SENT) {
+        if (barge == RECORD_FAILED) {
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+        return PLAYBACK_BARGE_CONTINUE;
+    }
+
+    int result_waited_ms = 0;
+    while (result_waited_ms < 8000 && ws_client_is_connected()) {
+        bool stop = false;
+        if (ws_client_consume_music_barge_result(&stop)) {
+            return stop ? PLAYBACK_BARGE_STOPPED : PLAYBACK_BARGE_CONTINUE;
+        }
+        if (!ws_client_is_tts_active()) {
+            return PLAYBACK_BARGE_CONTINUE;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+        result_waited_ms += 100;
+    }
+    return ws_client_is_connected()
+        ? PLAYBACK_BARGE_CONTINUE
+        : PLAYBACK_BARGE_WS_LOST;
+}
 
 static bool wait_for_ws_connected(int timeout_ms)
 {
@@ -145,38 +204,23 @@ static turn_wait_result_t wait_for_turn_result(int timeout_ms)
             return TURN_WS_LOST;
         }
 
-        if (ws_client_is_music_active()) {
-            record_result_t barge = record_and_send(true);
-            if (barge == RECORD_FAILED && !ws_client_is_connected()) {
+        // AFE keeps running during playback and audio_out feeds the speaker
+        // reference back into AEC.  Reuse the existing barge-in audio channel
+        // for both music and spoken replies so short commands such as "停" can
+        // be transcribed without waiting for the current TTS to finish.
+        if (ws_client_is_tts_active()) {
+            idle_waited_ms = 0;
+            playback_barge_result_t barge = listen_for_playback_stop();
+            if (barge == PLAYBACK_BARGE_WS_LOST) {
                 return TURN_WS_LOST;
             }
-            if (barge == RECORD_SENT) {
-                int result_waited_ms = 0;
-                while (result_waited_ms < 8000 && ws_client_is_connected()) {
-                    bool stop = false;
-                    if (ws_client_consume_music_barge_result(&stop)) {
-                        if (stop) {
-                            send_pending_tts_playback_ack();
-                            return TURN_DONE;
-                        }
-                        break;
-                    }
-                    if (!ws_client_is_music_active()) {
-                        break;
-                    }
-                    vTaskDelay(pdMS_TO_TICKS(100));
-                    result_waited_ms += 100;
-                }
-            } else if (barge == RECORD_FAILED) {
-                vTaskDelay(pdMS_TO_TICKS(200));
+            if (barge == PLAYBACK_BARGE_STOPPED) {
+                send_pending_tts_playback_ack();
+                return TURN_DONE;
             }
             continue;
         }
 
-        bool tts_active = ws_client_is_tts_active();
-        if (tts_active) {
-            idle_waited_ms = 0;
-        }
         // Keep a monotonic clock for keepalive; resetting the reply timeout
         // while TTS plays must not stop application-level pings.
         if (elapsed_ms - last_ping_ms >= 2000) {
@@ -185,9 +229,7 @@ static turn_wait_result_t wait_for_turn_result(int timeout_ms)
         }
         vTaskDelay(pdMS_TO_TICKS(100));
         elapsed_ms += 100;
-        if (!tts_active) {
-            idle_waited_ms += 100;
-        }
+        idle_waited_ms += 100;
     }
     return TURN_TIMEOUT;
 }
@@ -347,7 +389,7 @@ static bool send_opus_upload(const opus_upload_job_t *job)
     opus_encoder_destroy(encoder);
 
     if (chunks > 0) {
-        printf("audio sent: %d frames, %d bytes\n", chunks, opus_bytes);
+        MONITOR_DEBUG_PRINTF("audio sent: %d frames, %d bytes\n", chunks, opus_bytes);
     }
     return sent;
 }
@@ -693,23 +735,47 @@ static void notify_ai_persona_changed(void)
 
 static record_result_t record_and_send(bool music_barge_in)
 {
-    int total = SAMPLE_RATE * REC_MAX_DURATION_MS / 1000;
+    // 播放期间只需要识别“停/不要讲了”等短口令。普通 6 秒录音窗在 AEC
+    // 仍有少量扬声器残留时会迟迟不结束，导致用户需要重复说。把打断窗限制
+    // 为 2.5 秒，未命中时立刻开始下一窗；正常对话仍保留完整 6 秒。
+    int capture_max_ms = music_barge_in
+        ? REC_BARGE_MAX_DURATION_MS
+        : REC_MAX_DURATION_MS;
+    int total = SAMPLE_RATE * capture_max_ms / 1000;
     int waited_ms = 0;
+#if MONITOR_VERBOSE_DIAGNOSTICS
     int64_t capture_started_us = esp_timer_get_time();
+#endif
     live_opus_upload_t live = {0};
     bool live_disabled = false;
     bool live_aborted = false;
+    bool local_stop_detected = false;
     int last_keepalive_ms = -1000;  // 首发立即 ping
 
     afe_capture_start(total);
     while (!afe_capture_is_done()) {
         vTaskDelay(pdMS_TO_TICKS(50));
         waited_ms += 50;
+        if (music_barge_in
+            && (s_playback_wake_stop_requested
+                || afe_consume_playback_stop_detected())) {
+            s_playback_wake_stop_requested = false;
+            local_stop_detected = true;
+            break;
+        }
+        // If playback ended before anybody spoke, do not wait for the normal
+        // five-second no-speech timeout.  This keeps the next dialog turn
+        // responsive after a short TTS reply.
+        if (music_barge_in && !ws_client_is_tts_active() &&
+            !afe_capture_seen_speech()) {
+            break;
+        }
         if (!live.started && !live_disabled &&
             afe_capture_seen_speech() && ws_client_is_connected()) {
             if (live_opus_start(&live, music_barge_in)) {
-                printf("audio stream started: capture=%lldms\n",
-                       (long long)((esp_timer_get_time() - capture_started_us) / 1000));
+                MONITOR_DEBUG_PRINTF(
+                    "audio stream started: capture=%lldms\n",
+                    (long long)((esp_timer_get_time() - capture_started_us) / 1000));
             } else {
                 live_disabled = true;
             }
@@ -736,6 +802,14 @@ static record_result_t record_and_send(bool music_barge_in)
     int samples = 0;
     int16_t *pcm = afe_capture_finish(&samples);
 
+    if (local_stop_detected) {
+        // 如果云端备用通道已经开始流式上传，先关闭它；
+        // 真正的播放停止由调用者立即在本地执行。
+        live_opus_abort(&live);
+        free(pcm);
+        return RECORD_STOP_COMMAND;
+    }
+
     if (!pcm || samples < SAMPLE_RATE / 5) {  // 200ms 门槛，短句子也能录
         ESP_LOGW(TAG, "Record too short, skip");
         live_opus_abort(&live);
@@ -747,13 +821,14 @@ static record_result_t record_and_send(bool music_barge_in)
     int peak = 0;
     int active = 0;
     bool has_energy = pcm_has_speech(pcm, samples, &ac_avg, &peak, &active);
-    printf("record stats: ms=%d vad=%d energy=%d ac=%d peak=%d active=%d\n",
-           samples * 1000 / SAMPLE_RATE,
-           vad_had_speech ? 1 : 0,
-           has_energy ? 1 : 0,
-           ac_avg,
-           peak,
-           active);
+    MONITOR_DEBUG_PRINTF(
+        "record stats: ms=%d vad=%d energy=%d ac=%d peak=%d active=%d\n",
+        samples * 1000 / SAMPLE_RATE,
+        vad_had_speech ? 1 : 0,
+        has_energy ? 1 : 0,
+        ac_avg,
+        peak,
+        active);
     if (!vad_had_speech && !has_energy) {
         live_opus_abort(&live);
         free(pcm);
@@ -762,15 +837,18 @@ static record_result_t record_and_send(bool music_barge_in)
 
     if (live.started) {
         if (live_opus_finish(&live, pcm, samples)) {
+#if MONITOR_VERBOSE_DIAGNOSTICS
             int64_t now_us = esp_timer_get_time();
             int64_t first_ms = live.first_frame_us > 0
                 ? (live.first_frame_us - capture_started_us) / 1000
                 : -1;
-            printf("audio streamed: frames=%d bytes=%d first=%lldms total=%lldms\n",
-                   live.chunks,
-                   live.opus_bytes,
-                   (long long)first_ms,
-                   (long long)((now_us - capture_started_us) / 1000));
+            MONITOR_DEBUG_PRINTF(
+                "audio streamed: frames=%d bytes=%d first=%lldms total=%lldms\n",
+                live.chunks,
+                live.opus_bytes,
+                (long long)first_ms,
+                (long long)((now_us - capture_started_us) / 1000));
+#endif
             live_opus_close(&live);
             free(pcm);
             return RECORD_SENT;
@@ -817,15 +895,16 @@ static record_result_t record_and_send(bool music_barge_in)
     }
 
     bool sent = notify_value == OPUS_UPLOAD_OK;
-    printf("audio buffered fallback: sent=%d total=%lldms\n",
-           sent ? 1 : 0,
-           (long long)((esp_timer_get_time() - capture_started_us) / 1000));
+    MONITOR_DEBUG_PRINTF(
+        "audio buffered fallback: sent=%d total=%lldms\n",
+        sent ? 1 : 0,
+        (long long)((esp_timer_get_time() - capture_started_us) / 1000));
     return sent ? RECORD_SENT : RECORD_FAILED;
 }
 
 static void run_sleep_greeting(void)
 {
-    printf("\n[就寝] 检测到躺下 → 主动问候\n");
+    MONITOR_DEBUG_PRINTF("\n[就寝] 检测到躺下 → 主动问候\n");
 
     for (int attempt = 1; attempt <= WAKE_REPLY_RETRY_COUNT; attempt++) {
         if (!wait_for_ws_connected(WS_READY_TIMEOUT_MS)) {
@@ -866,7 +945,7 @@ static void run_interaction_reply(void)
 
     if (wait_for_ws_connected(WS_READY_TIMEOUT_MS)) {
         ws_client_clear_events();
-        printf("\n[环境确认] 等待用户回答\n");
+        MONITOR_DEBUG_PRINTF("\n[环境确认] 等待用户回答\n");
         if (ws_client_send_raw("{\"type\":\"interaction_reply\",\"state\":\"start\"}")) {
             if (record_and_send(false) == RECORD_SENT) {
                 (void)wait_for_turn_result(TURN_REPLY_TIMEOUT_MS);
@@ -992,9 +1071,17 @@ static void run_dialog(void)
 static void on_wake_word(void)
 {
     bool tts_guard = ws_client_is_tts_guard_active();
-    printf("wake callback: active=%d guard=%d\n",
-           s_dialog_active ? 1 : 0,
-           tts_guard ? 1 : 0);
+    MONITOR_DEBUG_PRINTF("wake callback: active=%d guard=%d\n",
+                         s_dialog_active ? 1 : 0,
+                         tts_guard ? 1 : 0);
+
+    // 与小智的 speaking-state 逻辑一致：播报时再次说
+    // 唤醒词也必须立即中断。这是离线“停止”口令之外
+    // 的确定性后备，不依赖云端 STT。
+    if (ws_client_is_tts_active()) {
+        s_playback_wake_stop_requested = true;
+        return;
+    }
 
     if (!s_dialog_active && !tts_guard) {
         s_wake_event = true;
@@ -1129,15 +1216,22 @@ static void on_tjc_rx(const char *message, int page_id, void *user_ctx)
 
 void app_main(void)
 {
-    printf("\n========== 智能枕头 v1.0 ==========\n\n");
+    // Competition monitor: one-time initialization summary followed by only
+    // wake/dialog/FSR/snore events. Enable component errors only when debugging.
+#if MONITOR_SHOW_ERRORS
+    esp_log_level_set("*", ESP_LOG_ERROR);
+#else
+    esp_log_level_set("*", ESP_LOG_NONE);
+#endif
+
+    printf("\n[\u521d\u59cb\u5316] \u667a\u80fd\u7761\u7720\u6795\u542f\u52a8\n");
+
+    MONITOR_DEBUG_PRINTF("\n========== 智能枕头 v1.0 ==========\n\n");
     esp_reset_reason_t reset_reason = esp_reset_reason();
     ESP_LOGW(TAG, "boot reset_reason=%d free_heap=%u min_free_heap=%u",
              (int)reset_reason,
              (unsigned)esp_get_free_heap_size(),
              (unsigned)esp_get_minimum_free_heap_size());
-    // Keep normal console output focused on sensors, wake/dialog, and snore.
-    // Warnings and errors remain visible for field diagnostics.
-    esp_log_level_set("*", ESP_LOG_WARN);
     if (!start_opus_upload_task()) {
         ESP_LOGE(TAG, "Opus task init failed");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
@@ -1173,10 +1267,17 @@ void app_main(void)
     uart_param_config(UART_NUM_0, &uart_cfg);
 #endif
 
+    printf("[\u521d\u59cb\u5316] \u6b63\u5728\u8fde\u63a5 WiFi...\n");
     if (wifi_connect(WIFI_SSID, WIFI_PASS) != 0) {
         ESP_LOGE(TAG, "WiFi failed");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
+
+    sensor_print_init_status();
+    printf("[\u521d\u59cb\u5316] LCD \u52a8\u6001\u5f62\u8c61: %s\n",
+           screen_err == ESP_OK ? "\u6b63\u5e38" : "\u5f02\u5e38");
+    printf("[\u521d\u59cb\u5316] \u73af\u5883\u706f\u5e26: %s\n",
+           led_err == ESP_OK ? "\u6b63\u5e38" : "\u5f02\u5e38");
 
     ws_client_start(WS_URI);
     vTaskDelay(pdMS_TO_TICKS(2000));
@@ -1185,17 +1286,35 @@ void app_main(void)
         ESP_LOGE(TAG, "AFE init failed");
         while (1) { vTaskDelay(pdMS_TO_TICKS(1000)); }
     }
-    snore_detector_start();
+    printf("[\u521d\u59cb\u5316] ESP-SR \u5524\u9192\u68c0\u6d4b: \u6b63\u5e38\n");
+    printf("[\u521d\u59cb\u5316] \u672c\u5730\u64ad\u653e\u6253\u65ad: %s\n",
+           afe_playback_stop_is_available() ? "\u6b63\u5e38" : "\u4e91\u7aef\u5907\u7528");
+
+    const bool snore_ready = snore_detector_start();
+    printf("[\u521d\u59cb\u5316] \u672c\u5730\u9f3e\u58f0 AI: %s\n",
+           snore_ready ? "\u6b63\u5e38" : "\u5f02\u5e38");
 
     vTaskDelay(pdMS_TO_TICKS(1500));
 
-    printf("[就绪] 说 '你好小安' 唤醒\n\n");
+    printf("[\u521d\u59cb\u5316] \u7cfb\u7edf\u5c31\u7eea\uff0c"
+           "\u6b63\u5728\u68c0\u6d4b\u201c\u4f60\u597d\u5c0f\u5b89\u201d\n\n");
+
+    MONITOR_DEBUG_PRINTF("[就绪] 说 '你好小安' 唤醒\n\n");
 
 #if ENABLE_UART_TEXT_INPUT
     uint8_t rx_buf[128];
 #endif
     while (1) {
         send_pending_tts_playback_ack();
+
+        // Also cover proactive/background TTS that is not inside run_dialog()
+        // or wait_for_turn_result(), so "停" works for every spoken message.
+        if (!s_dialog_active && ws_client_is_tts_active()) {
+            (void)listen_for_playback_stop();
+            send_pending_tts_playback_ack();
+            continue;
+        }
+
         bool tts_guard = ws_client_is_tts_guard_active();
         if (tts_guard) {
             s_wake_event = false;

@@ -1,4 +1,5 @@
 #include "snore_detector.h"
+#include "monitor_log.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -31,6 +32,7 @@ static constexpr float kSnoringClearThreshold = 0.45f;
 static constexpr int kVoteWindowSize = 10;
 static constexpr int kVotesRequired = 8;
 static constexpr int kClearVotesRequired = 8;
+static constexpr uint8_t kProgressReportInterval = 4;
 static constexpr int kDefaultCooldownSec = 300;
 static constexpr float kDefaultTargetKpa = 4.0f;
 static constexpr int kMinimumAdjustmentHoldSec = 15;
@@ -42,7 +44,9 @@ static TaskHandle_t s_task = nullptr;
 static int16_t *s_audio_window = nullptr;
 static portMUX_TYPE s_policy_lock = portMUX_INITIALIZER_UNLOCKED;
 
-static bool s_policy_enabled = false;
+// 功能开关默认开启，但实际推理必须等云端确认当前处于 App 配置的睡眠
+// 时段。这样修改睡眠时间后能立即停止监听，同时仍保留本地 AI 推理。
+static bool s_policy_enabled = true;
 static bool s_sleep_active = false;
 static bool s_interaction_active = false;
 static float s_target_kpa = kDefaultTargetKpa;
@@ -155,7 +159,7 @@ static void send_snore_event(bool adjusted,
              "{\"type\":\"snore_event\",\"snore\":true,"
              "\"score\":%.3f,\"non_snore\":%.3f,"
              "\"action\":\"inflate\",\"adjusted\":%s,"
-             "\"target_kpa\":%.2f,\"source\":\"local_snore_ai_10of8\"}",
+             "\"target_kpa\":%.2f,\"source\":\"local_snore_ai_8of10\"}",
              (double)snoring,
              (double)not_snoring,
              adjusted ? "true" : "false",
@@ -186,31 +190,57 @@ static void snore_task(void *arg)
         return;
     }
 
-    printf("model ready: project=%d frame=%d threshold=%.2f votes=%d/%d clear=%.2f\n",
-           EI_CLASSIFIER_PROJECT_ID,
-           kWindowSamples,
-           (double)kSnoringThreshold,
-           kVotesRequired,
-           kVoteWindowSize,
-           (double)kSnoringClearThreshold);
+    MONITOR_DEBUG_PRINTF(
+        "model ready: project=%d frame=%d threshold=%.2f votes=%d/%d clear=%.2f\n",
+        EI_CLASSIFIER_PROJECT_ID,
+        kWindowSamples,
+        (double)kSnoringThreshold,
+        kVotesRequired,
+        kVoteWindowSize,
+        (double)kSnoringClearThreshold);
 
     snore_vote_state_t votes = {};
     bool monitoring = false;
     bool pillow_adjustment_active = false;
     uint32_t last_total = 0;
     int64_t last_adjust_us = 0;
+    int reported_monitor_state = -1;
+    uint8_t progress_report_counter = 0;
+    uint8_t last_reported_votes = UINT8_MAX;
 
     while (true) {
         snore_policy_snapshot_t policy;
         get_policy(&policy);
 
+        const bool person_on_bed = sensor_person_on_bed();
         const bool sleep_session_active = policy.enabled &&
                                           policy.sleep_active &&
-                                          sensor_person_on_bed();
+                                          person_on_bed;
         const bool should_monitor = sleep_session_active &&
                                     !policy.interaction_active &&
                                     !ws_client_is_tts_active() &&
                                     !ws_client_is_tts_guard_active();
+
+        // 只在状态变化时输出，明确告诉演示者为什么当前没有票数。
+        const int monitor_state = !policy.enabled ? 0 :
+                                  !policy.sleep_active ? 1 :
+                                  !person_on_bed ? 2 :
+                                  !should_monitor ? 3 : 4;
+        if (monitor_state != reported_monitor_state) {
+            if (monitor_state == 0) {
+                printf("[\u9f3e\u58f0] \u76d1\u6d4b\u5df2\u5173\u95ed\n");
+            } else if (monitor_state == 1) {
+                printf("[\u9f3e\u58f0] \u7b49\u5f85 App \u8bbe\u5b9a\u7684\u7761\u7720\u65f6\u6bb5\n");
+            } else if (monitor_state == 2) {
+                printf("[\u9f3e\u58f0] \u7b49\u5f85 FSR \u5728\u6795\n");
+            } else if (monitor_state == 3) {
+                printf("[\u9f3e\u58f0] AI \u5bf9\u8bdd/\u64ad\u62a5\u4e2d\uff0c\u76d1\u542c\u6682\u505c\n");
+            } else {
+                printf("[\u9f3e\u58f0] \u76d1\u542c\u5df2\u5f00\u542f\uff1a"
+                       "\u9608\u503c 0.75\uff0c8/10 \u7968\u89e6\u53d1\n");
+            }
+            reported_monitor_state = monitor_state;
+        }
 
         if (!should_monitor) {
             if (!sleep_session_active && pillow_adjustment_active) {
@@ -223,6 +253,8 @@ static void snore_task(void *arg)
                 last_total = 0;
             }
             monitoring = false;
+            progress_report_counter = 0;
+            last_reported_votes = UINT8_MAX;
             vTaskDelay(pdMS_TO_TICKS(250));
             continue;
         }
@@ -232,7 +264,7 @@ static void snore_task(void *arg)
             reset_votes(&votes);
             last_total = 0;
             screen_anim_set_subtitle("睡眠", "鼾声监测已开启");
-            printf("snore monitor active\n");
+            MONITOR_DEBUG_PRINTF("snore monitor active\n");
         }
 
         uint32_t total = 0;
@@ -261,6 +293,7 @@ static void snore_task(void *arg)
         }
 
         add_vote(&votes, snoring_probability);
+        progress_report_counter++;
         const bool window_full = votes.size == kVoteWindowSize;
         const bool just_detected = !votes.active && window_full &&
                                    votes.snoring_count >= kVotesRequired;
@@ -294,19 +327,35 @@ static void snore_task(void *arg)
         } else {
             snprintf(decision, sizeof(decision), "not snoring");
         }
-        printf("snoring=%.3f  not=%.3f  |  %s\n",
-               (double)snoring_probability,
-               (double)not_snoring_probability,
-               decision);
-        fflush(stdout);
-        printf("snore votes=%u/%d clear=%u/%d window=%u/%d inference=%lldms\n",
-               votes.snoring_count,
-               kVotesRequired,
-               votes.clear_count,
-               kClearVotesRequired,
-               votes.size,
-               kVoteWindowSize,
-               (long long)inference_ms);
+        MONITOR_DEBUG_PRINTF("snoring=%.3f  not=%.3f  |  %s\n",
+                             (double)snoring_probability,
+                             (double)not_snoring_probability,
+                             decision);
+        MONITOR_DEBUG_PRINTF(
+            "snore votes=%u/%d clear=%u/%d window=%u/%d inference=%lldms\n",
+            votes.snoring_count,
+            kVotesRequired,
+            votes.clear_count,
+            kClearVotesRequired,
+            votes.size,
+            kVoteWindowSize,
+            (long long)inference_ms);
+
+        // 每个模型窗口首次输出；候选票数变化时立即输出；没有变化时每约
+        // 2 秒输出一次。这样能看到“目前多少票”，又不会恢复逐帧刷屏。
+        if (votes.size == 1 ||
+            votes.snoring_count != last_reported_votes ||
+            progress_report_counter >= kProgressReportInterval) {
+            printf("[\u9f3e\u58f0] \u7f6e\u4fe1\u5ea6 %.2f\uff0c"
+                   "\u7968\u6570 %u/%d\uff08\u7a97\u53e3 %u/%d\uff09\n",
+                   (double)snoring_probability,
+                   votes.snoring_count,
+                   kVotesRequired,
+                   votes.size,
+                   kVoteWindowSize);
+            last_reported_votes = votes.snoring_count;
+            progress_report_counter = 0;
+        }
 
         if (just_detected) {
             const int64_t now_us = esp_timer_get_time();
@@ -325,12 +374,16 @@ static void snore_task(void *arg)
                                  policy.target_kpa,
                                  snoring_probability,
                                  not_snoring_probability);
+                printf("[鼾声] 已检测，置信度 %.2f，气囊干预%s\n",
+                       (double)snoring_probability,
+                       adjusted ? "已启动" : "未执行");
             } else {
                 screen_anim_set_subtitle("睡眠", "检测到鼾声，调整冷却中");
                 ESP_LOGI(TAG, "snore detected during %ds adjustment cooldown",
                          policy.cooldown_sec);
             }
         } else if (just_cleared) {
+            printf("[鼾声] 已结束，枕头开始恢复\n");
             screen_anim_set_subtitle("睡眠", "鼾声监测中");
             if (pillow_adjustment_active) {
                 const bool released = ws_client_request_pillow_recover_to_kpa(
@@ -348,9 +401,9 @@ static void snore_task(void *arg)
     }
 }
 
-void snore_detector_start(void)
+bool snore_detector_start(void)
 {
-    if (s_task) return;
+    if (s_task) return true;
 
     const BaseType_t ret = xTaskCreatePinnedToCoreWithCaps(
         snore_task,
@@ -364,5 +417,7 @@ void snore_detector_start(void)
     if (ret != pdPASS) {
         s_task = nullptr;
         ESP_LOGE(TAG, "snore task PSRAM stack allocation failed");
+        return false;
     }
+    return true;
 }

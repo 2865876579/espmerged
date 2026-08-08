@@ -25,8 +25,20 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 # ===== Timer task stack: larger stack for timer callbacks =====
 CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096
 
-# ===== Log level =====
-CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+# ===== Serial monitor: application events are printed explicitly =====
+CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y
+CONFIG_LOG_DEFAULT_LEVEL_NONE=y
 
 # ===== ESP-SR: WakeNet9 NIHAOXIAOAN_TTS2 =====
 CONFIG_SR_WN_WN9_NIHAOXIAOAN_TTS2=y
+
+# MultiNet7: offline playback stop commands.
+CONFIG_SR_MN_CN_MULTINET7_QUANT=y
+
+# ===== ESP-SR / ESP-DL performance baseline =====
+# Match Espressif's ESP32-S3 MultiNet7 example. Running the model at 160 MHz
+# with half-size caches caused watchdog/FFT failures during local stop detection.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
+CONFIG_ESP32S3_DATA_CACHE_64KB=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y

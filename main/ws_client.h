@@ -32,6 +32,8 @@ bool ws_client_is_connected(void);
 uint32_t ws_client_disconnected_ms(void);
 bool ws_client_is_tts_active(void);
 bool ws_client_is_music_active(void);
+/** 立即丢弃本地 TTS/音乐队列，用于离线停止口令。 */
+void ws_client_stop_tts_now(void);
 bool ws_client_consume_music_barge_result(bool *stop);
 bool ws_client_is_tts_guard_active(void);
 bool ws_client_consume_wake_ack(uint32_t wake_id);

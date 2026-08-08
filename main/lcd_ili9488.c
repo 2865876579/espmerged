@@ -17,7 +17,10 @@
 
 #define LCD_SPI_HOST SPI2_HOST
 #define LCD_PIXEL_CLOCK_HZ (20 * 1000 * 1000)
-#define LCD_MAX_TRANSFER_LINES 8
+// The blink crop is 111 x 61 x 3 = 20313 bytes.  Reserve enough DMA transfer
+// capacity for it to be sent as one transaction; ordinary full-width drawing
+// still uses the smaller 8-line chunks allocated by screen_anim.c.
+#define LCD_MAX_TRANSFER_LINES 22
 
 #define LCD_PIN_MOSI GPIO_NUM_38
 #define LCD_PIN_MISO (-1)

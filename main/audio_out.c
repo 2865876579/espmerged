@@ -38,9 +38,13 @@ static volatile bool s_tx_enabled = false;
 // ── AEC 参考信号 ring buffer ──────────────────────────
 // 借鉴 xiaozhi：播放音频时同步抄一份给 AFE 做回声消除
 #define REF_BUF_SAMPLES  9600   // 600ms @ 16kHz
-#define AEC_REF_DELAY_SAMPLES 2300  // 143ms 延迟，保证读写不重叠
 static int16_t *s_ref_ring = NULL;
-static volatile int s_ref_pos = 0;  // 总写入样本数（单调递增）
+// 软件 AEC 参考必须是一条与麦克风等速前进的 PCM 流。
+// 原先每次都按“当前写指针 - 固定延迟”取一块，当 60ms 播放包和
+// 16ms AFE 帧不对齐时会重复/跳过参考样本，AEC 反而无法收敛。这里改为
+// 单调读写指针的 FIFO，与小智 Box Lite 的软件回采方式一致。
+static uint64_t s_ref_write_pos = 0;
+static uint64_t s_ref_read_pos = 0;
 static portMUX_TYPE s_ref_lock = portMUX_INITIALIZER_UNLOCKED;
 
 
@@ -147,17 +151,19 @@ void audio_out_write(const uint8_t *data, size_t len)
         return;
     }
 
-    // ★ AEC 参考：抄 mono PCM 到 ring buffer（有锁，双核 cache 同步）
+    // ★ AEC 参考：抄 mono PCM 到 FIFO ring（有锁，双核 cache 同步）
     int frames = (int)len / 4;
     const int16_t *stereo = (const int16_t *)data;
     portENTER_CRITICAL(&s_ref_lock);
-    int pos = s_ref_pos;
-    int idx = pos % REF_BUF_SAMPLES;
-    int tail = REF_BUF_SAMPLES - idx;
-    int n = (frames < tail) ? frames : tail;
-    for (int i = 0; i < n; i++) s_ref_ring[idx + i] = stereo[i * 2];
-    for (int i = n; i < frames; i++) s_ref_ring[i - n] = stereo[i * 2];
-    s_ref_pos = pos + frames;
+    uint64_t queued = s_ref_write_pos - s_ref_read_pos;
+    if (queued + (uint64_t)frames > REF_BUF_SAMPLES) {
+        // AFE 一时跟不上时丢弃最旧参考，不能让旧音频与当前麦克风错位。
+        s_ref_read_pos = s_ref_write_pos + (uint64_t)frames - REF_BUF_SAMPLES;
+    }
+    for (int i = 0; i < frames; i++) {
+        s_ref_ring[(s_ref_write_pos + (uint64_t)i) % REF_BUF_SAMPLES] = stereo[i * 2];
+    }
+    s_ref_write_pos += (uint64_t)frames;
     portEXIT_CRITICAL(&s_ref_lock);
 }
 
@@ -175,25 +181,19 @@ int audio_out_read_ref(int16_t *out, int want)
         return want;
     }
 
-    // ★ 有锁读：临界区保护，保证跨核 cache 一致
+    // ★ 有锁顺序读：每个播放样本只给 AFE 一次。
     portENTER_CRITICAL(&s_ref_lock);
-    int pos = s_ref_pos;
-    int total = pos - AEC_REF_DELAY_SAMPLES;
-    if (total < 0) total = 0;
-    int copy = (total < want) ? total : want;
-    int start = (pos - AEC_REF_DELAY_SAMPLES - copy) % REF_BUF_SAMPLES;
-    if (start < 0) start += REF_BUF_SAMPLES;
+    uint64_t available = s_ref_write_pos - s_ref_read_pos;
+    int copy = available < (uint64_t)want ? (int)available : want;
     for (int i = 0; i < copy; i++) {
-        int idx = start + i;
-        if (idx >= REF_BUF_SAMPLES) idx -= REF_BUF_SAMPLES;
-        out[i] = s_ref_ring[idx];
+        out[i] = s_ref_ring[(s_ref_read_pos + (uint64_t)i) % REF_BUF_SAMPLES];
     }
+    s_ref_read_pos += (uint64_t)copy;
     portEXIT_CRITICAL(&s_ref_lock);
 
-    // 历史不够的部分补零
+    // 当前没有播放参考时补零，不重放旧参考帧。
     if (copy < want) {
-        memmove(out + want - copy, out, copy * sizeof(int16_t));
-        memset(out, 0, (want - copy) * sizeof(int16_t));
+        memset(out + copy, 0, (want - copy) * sizeof(int16_t));
     }
     return want;
 }

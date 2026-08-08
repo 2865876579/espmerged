@@ -119,7 +119,16 @@ esp_err_t avatar_storage_init(void)
     s_partition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
                                            ESP_PARTITION_SUBTYPE_ANY,
                                            AVATAR_PARTITION_LABEL);
-    return avatar_storage_reload();
+    esp_err_t ret = avatar_storage_reload();
+
+    // 自定义头像是可选功能：分区为空、头部无效或旧固件没有该分区时，
+    // 都应正常回退到固件内置动态小安，而不是把“没有自定义头像”作为
+    // 启动错误交给 ESP_ERROR_CHECK_WITHOUT_ABORT 打印。
+    if (ret == ESP_ERR_INVALID_STATE || ret == ESP_ERR_NOT_FOUND) {
+        s_mapped_pixels = NULL;
+        return ESP_OK;
+    }
+    return ret;
 }
 
 const uint8_t *avatar_storage_get_base(const uint8_t *fallback)

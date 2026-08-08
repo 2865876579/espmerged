@@ -1,9 +1,14 @@
 # ESP-IDF build output
 build/
+build_codex/
 sdkconfig
 sdkconfig.old
 dependencies.lock
 managed_components/
+
+# Local generated artifacts and snapshots
+backups/
+outputs/
 
 # Local secrets
 .env

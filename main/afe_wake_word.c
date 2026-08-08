@@ -1,4 +1,5 @@
 #include "afe_wake_word.h"
+#include "monitor_log.h"
 #include "audio_out.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
@@ -7,6 +8,8 @@
 #include "esp_afe_sr_iface.h"
 #include "esp_afe_sr_models.h"
 #include "esp_wn_models.h"
+#include "esp_mn_models.h"
+#include "esp_mn_speech_commands.h"
 #include "model_path.h"
 #include "driver/i2s_std.h"
 #include "esp_heap_caps.h"
@@ -20,6 +23,14 @@ static const char *TAG = "afe_wake";
 // AFE v2.x: handle from esp_afe_handle_from_config() + data from create_from_config()
 static const esp_afe_sr_iface_t *s_afe_handle = NULL;
 static esp_afe_sr_data_t        *s_afe_data   = NULL;
+
+// 播放期间的本地停止口令。仅在 TTS/音乐正在播放时运行，
+// 避免常驻 MultiNet 占用 CPU，也避免普通对话中的“停止”被误拦截。
+#define PLAYBACK_STOP_COMMAND_ID 1
+static esp_mn_iface_t *s_mn_handle = NULL;
+static model_iface_data_t *s_mn_data = NULL;
+static volatile bool s_playback_stop_detection_enabled = false;
+static volatile bool s_playback_stop_detected = false;
 
 // 唤醒词回调
 static wake_word_callback_t s_wake_cb = NULL;
@@ -48,8 +59,12 @@ static portMUX_TYPE s_capture_lock = portMUX_INITIALIZER_UNLOCKED;
 #define AFE_INTERNAL_PRIORITY 1
 #define AFE_FEED_TASK_PRIORITY 8
 #define AFE_FETCH_TASK_PRIORITY 3
-#define AFE_FEED_TASK_STACK_BYTES (2048 * 3)
-#define AFE_FETCH_TASK_STACK_BYTES 8192
+#define AFE_FEED_TASK_STACK_BYTES (8 * 1024)
+// MultiNet7 的 Zipformer 推理会在调用任务栈上运行 ESP-DL 内核。官方
+// ESP-Skainet 示例使用内部 RAM 的 8 KiB 栈。不能把该栈放在 PSRAM，
+// 否则实机进入 detect() 后会在
+// dl_nn_doubleswish_i16 一带异常，并表现为说出停止词后立即重启。
+#define AFE_FETCH_TASK_STACK_BYTES (8 * 1024)
 #define AFE_FEED_TASK_CORE 0
 #define AFE_INTERNAL_CORE 1
 #define AFE_ENABLE_AEC 1
@@ -316,6 +331,7 @@ static void afe_feed_task(void *arg)
 // ============================================================
 static void afe_fetch_task(void *arg)
 {
+    bool multinet_running = false;
     while (1) {
         afe_fetch_result_t *res = s_afe_handle->fetch_with_delay
             ? s_afe_handle->fetch_with_delay(s_afe_data, portMAX_DELAY)
@@ -331,10 +347,41 @@ static void afe_fetch_task(void *arg)
         // 唤醒词检测
         if (res->wakeup_state == WAKENET_DETECTED
             && s_cooldown == 0) {
-            printf("*** WAKE WORD DETECTED! ***\n");
+            MONITOR_DEBUG_PRINTF("*** WAKE WORD DETECTED! ***\n");
             s_cooldown = COOLDOWN_TICKS;
             // ★ 不 disable wakenet — 否则音频通路关闭，采集不到数据
             if (s_wake_cb) s_wake_cb();
+        }
+
+        // 播放打断走本地 MultiNet，而不是先上传一大段“用户语音 +
+        // 扬声器回声”再做云端 STT。开关由 fetch 任务自己应用，以免
+        // clean()/detect() 与其它任务并发访问模型内部状态。
+        bool should_run_multinet = s_playback_stop_detection_enabled
+                                   && s_mn_handle && s_mn_data;
+        if (should_run_multinet != multinet_running) {
+            s_mn_handle->clean(s_mn_data);
+            multinet_running = should_run_multinet;
+        }
+        if (multinet_running && res->data != NULL) {
+            esp_mn_state_t mn_state = s_mn_handle->detect(s_mn_data, res->data);
+            if (mn_state == ESP_MN_STATE_DETECTED) {
+                esp_mn_results_t *mn_result = s_mn_handle->get_results(s_mn_data);
+                if (mn_result && mn_result->num > 0
+                    && mn_result->command_id[0] == PLAYBACK_STOP_COMMAND_ID) {
+                    ESP_LOGI(TAG,
+                             "local stop detected: phrase=%d prob=%.3f text=%s",
+                             mn_result->phrase_id[0],
+                             (double)mn_result->prob[0],
+                             mn_result->string);
+                    s_playback_stop_detected = true;
+                    s_playback_stop_detection_enabled = false;
+                    multinet_running = false;
+                }
+                s_mn_handle->clean(s_mn_data);
+            } else if (mn_state == ESP_MN_STATE_TIMEOUT) {
+                // 超时只表示当前检测窗结束；播放未结束时立即开新窗。
+                s_mn_handle->clean(s_mn_data);
+            }
         }
 
         // 录音采集: 从 AFE 降噪输出中拷贝，优先用 AFE VAD 做端点检测。
@@ -420,14 +467,20 @@ int afe_wake_word_init(wake_word_callback_t cb)
         return -1;
     }
 
-    // 3. 创建 AFE 配置。当前主程序内部 RAM 紧张，默认关闭 AEC，保留唤醒词和 VAD。
+    // 3. 创建 AFE 配置。MR 的 R 通道由 audio_out 的软件回采提供。
     ESP_LOGI(TAG, "heap before AFE create: internal free=%u largest=%u psram free=%u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
+    // 当前链路的最终消费者是 WakeNet/MultiNet，因此使用语音识别（SR）
+    // 前端，而不是照搬语音通话（VC/VOIP）前端。VC/VOIP 与本项目同时启用
+    // WakeNet、MultiNet 和 PSRAM 任务栈后，实机启动时出现了 PSRAM heap
+    // 元数据损坏，崩溃最终随机暴露在 cJSON_Delete() 或 lwIP malloc() 中。
+    // 保留 M+R 软件回采和高性能 AEC，但让 AFE 类型、AEC 模式与识别场景匹配。
     afe_config_t *cfg = afe_config_init(AFE_ENABLE_AEC ? "MR" : "M", models,
-                                        AFE_TYPE_SR, AFE_MODE_LOW_COST);
+                                        AFE_TYPE_SR,
+                                        AFE_MODE_HIGH_PERF);
     if (!cfg) {
         ESP_LOGE(TAG, "afe_config_init failed");
         return -1;
@@ -439,15 +492,16 @@ int afe_wake_word_init(wake_word_callback_t cb)
     cfg->wakenet_mode       = DET_MODE_95;
     cfg->aec_init           = AFE_ENABLE_AEC;
     if (AFE_ENABLE_AEC) {
-        cfg->aec_mode       = AEC_MODE_SR_LOW_COST;
+        cfg->aec_mode       = AEC_MODE_SR_HIGH_PERF;
+        cfg->aec_nlp_level  = AEC_NLP_LEVEL_AGGR;
     }
     cfg->se_init            = false;
     cfg->ns_init            = false;
     cfg->vad_init           = true;
-    cfg->vad_mode           = VAD_MODE_3;
+    cfg->vad_mode           = VAD_MODE_0;
     cfg->vad_model_name     = NULL;
     cfg->vad_min_speech_ms  = 96;
-    cfg->vad_min_noise_ms   = 300;
+    cfg->vad_min_noise_ms   = 100;
     cfg->vad_delay_ms       = 128;
     cfg->agc_init           = false;
     cfg->afe_perferred_core     = AFE_INTERNAL_CORE;
@@ -507,44 +561,101 @@ int afe_wake_word_init(wake_word_callback_t cb)
     ESP_LOGI(TAG, "AFE init OK: feed=%d(ch=%d) fetch=%d rate=%d",
              s_feed_chunksize, s_feed_channels, s_fetch_chunksize, samp_rate);
 
+    // MultiNet7 检测结果只在本地用于停止播放；动态中文命令必须用拼音
+    // 添加。初始化失败时保留云端 STT 打断作为后备。
+    char *mn_name = esp_srmodel_filter(models, ESP_MN_PREFIX, ESP_MN_CHINESE);
+    if (mn_name) {
+        s_mn_handle = esp_mn_handle_from_name(mn_name);
+    }
+    if (s_mn_handle) {
+        s_mn_data = s_mn_handle->create(mn_name, 3000);
+    }
+    if (s_mn_handle && s_mn_data
+        && esp_mn_commands_alloc(s_mn_handle, s_mn_data) == ESP_OK) {
+        // 中文 MultiNet 的动态命令输入不是 UTF-8 汉字，而是以空格分隔的
+        // 无声调拼音。直接传“停止/不要讲了”会被 check_speech_command()
+        // 全部判为 invalid，设备启动日志中的“No commands available”正是
+        // 因此产生。短于三个音节的词也容易误触发，所以保留明确且稳健的
+        // 3～6 音节停止口令，并将同义短语映射到同一个 command id。
+        static const char *const stop_phrases[] = {
+            "ting xia lai",
+            "bie shuo le",
+            "bu yao shuo le",
+            "bie jiang le",
+            "bu yao jiang le",
+            "ting zhi bo fang",
+            "zan ting bo fang",
+            "xiao an ting zhi",
+            "xiao an bie jiang le",
+            "xiao an bu yao jiang le",
+        };
+        size_t commands_added = 0;
+        for (size_t i = 0; i < sizeof(stop_phrases) / sizeof(stop_phrases[0]); i++) {
+            if (esp_mn_commands_add(PLAYBACK_STOP_COMMAND_ID, stop_phrases[i]) == ESP_OK) {
+                commands_added++;
+            }
+        }
+        esp_mn_error_t *command_errors = esp_mn_commands_update();
+        if (commands_added == 0) {
+            ESP_LOGE(TAG, "playback stop commands init failed");
+            s_mn_handle->destroy(s_mn_data);
+            s_mn_data = NULL;
+            s_mn_handle = NULL;
+            esp_mn_commands_free();
+        } else {
+            // 使用 MultiNet7 模型自带的阈值。之前手工设为 0.55
+            // 会使扬声器播放期间的近端短口令难以达到阈值。
+            if (command_errors != NULL) {
+                ESP_LOGW(TAG, "MultiNet ignored %d invalid stop phrases",
+                         command_errors->num);
+            }
+            int mn_chunksize = s_mn_handle->get_samp_chunksize(s_mn_data);
+            if (mn_chunksize != s_fetch_chunksize) {
+                ESP_LOGE(TAG, "MultiNet/AFE chunk mismatch: mn=%d afe=%d",
+                         mn_chunksize, s_fetch_chunksize);
+                s_mn_handle->destroy(s_mn_data);
+                s_mn_data = NULL;
+                s_mn_handle = NULL;
+                esp_mn_commands_free();
+            } else {
+                ESP_LOGI(TAG, "MultiNet stop commands ready: %u",
+                         (unsigned)commands_added);
+                esp_mn_active_commands_print();
+            }
+        }
+    }
+
     // 9. 释放配置（不再需要）
     afe_config_free(cfg);
 
-    // Start fetch before feed so AFE has a reader before microphone frames arrive.
-    // Keep these large stacks in PSRAM; internal RAM is already tight with LCD/WiFi/AFE.
-    s_fetch_task_with_caps = true;
-    BaseType_t fetch_ret = xTaskCreateWithCaps(afe_fetch_task, "afe_fetch",
-                                                AFE_FETCH_TASK_STACK_BYTES, NULL,
-                                                AFE_FETCH_TASK_PRIORITY, NULL,
-                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    // 与 ESP-Skainet 官方 MultiNet 示例一致：识别任务使用内部 RAM 栈并
+    // 固定在 core 1，采集任务固定在 core 0。此前 xTaskCreateWithCaps() 把
+    // afe_fetch 栈放到 PSRAM，普通 AFE fetch 尚可运行，但 MultiNet7 的
+    // ESP-DL 推理进入后会崩溃。
+    s_fetch_task_with_caps = false;
+    BaseType_t fetch_ret = xTaskCreatePinnedToCore(
+        afe_fetch_task, "afe_fetch", AFE_FETCH_TASK_STACK_BYTES, NULL,
+        AFE_FETCH_TASK_PRIORITY, NULL, AFE_INTERNAL_CORE);
     if (fetch_ret != pdPASS) {
-        fetch_ret = xTaskCreate(afe_fetch_task, "afe_fetch",
-                               AFE_FETCH_TASK_STACK_BYTES, NULL,
-                               AFE_FETCH_TASK_PRIORITY, NULL);
-        s_fetch_task_with_caps = false;
-    } else {
-        s_fetch_task_with_caps = true;
-    }
-    if (fetch_ret != pdPASS) {
-        ESP_LOGE(TAG, "afe_fetch task create failed: %ld", (long)fetch_ret);
+        printf("[初始化] afe_fetch 内部栈创建失败: ret=%ld internal=%u largest=%u\n",
+               (long)fetch_ret,
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
         return -1;
     }
 
+    // feed 不执行 ESP-DL SIMD，只负责 I2S 搬运和 AFE feed，可以安全地把
+    // 栈放入 PSRAM，从而为 Wi-Fi、AEC 和 MultiNet 保留内部 SRAM。
     s_feed_task_with_caps = true;
-    BaseType_t feed_ret = xTaskCreateWithCaps(afe_feed_task, "afe_feed",
-                                               AFE_FEED_TASK_STACK_BYTES, NULL,
-                                               AFE_FEED_TASK_PRIORITY, NULL,
-                                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    BaseType_t feed_ret = xTaskCreatePinnedToCoreWithCaps(
+        afe_feed_task, "afe_feed", AFE_FEED_TASK_STACK_BYTES, NULL,
+        AFE_FEED_TASK_PRIORITY, NULL, AFE_FEED_TASK_CORE,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (feed_ret != pdPASS) {
-        feed_ret = xTaskCreate(afe_feed_task, "afe_feed",
-                              AFE_FEED_TASK_STACK_BYTES, NULL,
-                              AFE_FEED_TASK_PRIORITY, NULL);
-        s_feed_task_with_caps = false;
-    } else {
-        s_feed_task_with_caps = true;
-    }
-    if (feed_ret != pdPASS) {
-        ESP_LOGE(TAG, "afe_feed task create failed: %ld", (long)feed_ret);
+        printf("[初始化] afe_feed PSRAM 栈创建失败: ret=%ld psram=%u largest=%u\n",
+               (long)feed_ret,
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
         return -1;
     }
 
@@ -553,6 +664,27 @@ int afe_wake_word_init(wake_word_callback_t cb)
 
     ESP_LOGI(TAG, "AFE pipeline started, listening...");
     return 0;
+}
+
+
+void afe_set_playback_stop_detection(bool enabled)
+{
+    s_playback_stop_detected = false;
+    s_playback_stop_detection_enabled = enabled && s_mn_handle && s_mn_data;
+}
+
+
+bool afe_consume_playback_stop_detected(void)
+{
+    bool detected = s_playback_stop_detected;
+    s_playback_stop_detected = false;
+    return detected;
+}
+
+
+bool afe_playback_stop_is_available(void)
+{
+    return s_mn_handle != NULL && s_mn_data != NULL;
 }
 
 

@@ -75,6 +75,12 @@ typedef struct {
  */
 void init_sensors(void);
 
+/**
+ * 输出一次简洁的传感器初始化汇总。初始化过程本身保持静默，避免把底层
+ * 驱动细节混入比赛监视器；在 WiFi 连接后由主流程按统一顺序调用。
+ */
+void sensor_print_init_status(void);
+
 /* ── 传感器轮询任务（FreeRTOS）────────────────────────── */
 /**
  * 1 Hz 循环：读取全部传感器 → 刷串口屏 → 缓存最新数据。

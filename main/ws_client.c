@@ -1,4 +1,5 @@
 #include "ws_client.h"
+#include "monitor_log.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -30,6 +31,7 @@ static const char *TAG = "ws_client";
 
 static esp_websocket_client_handle_t s_client = NULL;
 static volatile bool s_connected = false;
+static bool s_initial_connection_reported = false;
 static volatile TickType_t s_last_disconnected_tick = 0;
 static volatile uint32_t s_disconnect_count = 0;
 static volatile bool s_tts_active = false;
@@ -402,9 +404,11 @@ static void pump_task(void *arg) {
             emergency_release(); vTaskDelay(pdMS_TO_TICKS(3000)); valve_close();
         } else if (cmd == PUMP_TILT_TO_KPA || cmd == PUMP_RECOVER_TO_KPA) {
             float curr = sensor_read_pressure_kpa();
-            printf("[pressure] current=%.2f kPa target=%.2f kPa\n", curr, target);
+            MONITOR_DEBUG_PRINTF(
+                "[pressure] current=%.2f kPa target=%.2f kPa\n",
+                curr, target);
             if (curr < 0) {
-                printf("[pressure] sensor invalid\n");
+                MONITOR_DEBUG_PRINTF("[pressure] sensor invalid\n");
                 continue;
             }
 
@@ -456,7 +460,9 @@ static void pump_task(void *arg) {
                     }
                     if (interrupted) break;
                     curr = sensor_read_pressure_kpa();
-                    printf("[pressure] settled=%.2f kPa target=%.2f kPa\n", curr, target);
+                    MONITOR_DEBUG_PRINTF(
+                        "[pressure] settled=%.2f kPa target=%.2f kPa\n",
+                        curr, target);
                     if (curr < 0) break;
                     reached = curr >= target - PILLOW_PRESSURE_TOLERANCE_KPA;
                     if (!reached && curr < segment_start + PILLOW_MIN_PROGRESS_KPA) {
@@ -531,6 +537,11 @@ static void pump_task(void *arg) {
                 target, curr, reached ? "true" : "false",
                 stalled ? "true" : "false");
             ws_client_send_raw(buf);
+            MONITOR_DEBUG_PRINTF(
+                "[气囊] 调节%s：目标 %.2f kPa，当前 %.2f kPa\n",
+                reached ? "完成" : "结束",
+                (double)target,
+                (double)curr);
         }
     }
 }
@@ -875,6 +886,10 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
     case WEBSOCKET_EVENT_CONNECTED:
         s_connected = true;
         s_last_disconnected_tick = 0;
+        if (!s_initial_connection_reported) {
+            printf("[\u521d\u59cb\u5316] AI \u8bed\u97f3\u670d\u52a1: \u5df2\u8fde\u63a5\n");
+            s_initial_connection_reported = true;
+        }
         {
             char hello_json[320];
             snprintf(hello_json, sizeof(hello_json),
@@ -1033,7 +1048,7 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                 else if (strcmp(type->valuestring, "status") == 0) {
                     cJSON *msg = cJSON_GetObjectItem(json, "msg");
                     if (msg && cJSON_IsString(msg)) {
-                        printf("[状态] %s\n", msg->valuestring);
+                        MONITOR_DEBUG_PRINTF("[状态] %s\n", msg->valuestring);
                         screen_anim_set_subtitle("状态", msg->valuestring);
                     }
                     portENTER_CRITICAL(&s_event_spinlock);
@@ -1043,7 +1058,7 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                 else if (strcmp(type->valuestring, "screen_status") == 0) {
                     cJSON *msg = cJSON_GetObjectItem(json, "msg");
                     if (msg && cJSON_IsString(msg)) {
-                        printf("[screen_status] %s\n", msg->valuestring);
+                        MONITOR_DEBUG_PRINTF("[screen_status] %s\n", msg->valuestring);
                         cJSON *duration = cJSON_GetObjectItem(json, "duration_ms");
                         int duration_ms = cJSON_IsNumber(duration) ? duration->valueint : 0;
                         if (duration_ms > 0) {
@@ -1241,10 +1256,11 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                                            ? cooldown_item->valueint
                                            : 300;
                     snore_detector_set_policy(enabled, sleep_active, target_kpa, cooldown_sec);
-                    printf("[snore] policy enabled=%d sleep=%d target=%.2f kPa\n",
-                           enabled ? 1 : 0,
-                           sleep_active ? 1 : 0,
-                           (double)target_kpa);
+                    MONITOR_DEBUG_PRINTF(
+                        "[snore] policy enabled=%d sleep=%d target=%.2f kPa\n",
+                        enabled ? 1 : 0,
+                        sleep_active ? 1 : 0,
+                        (double)target_kpa);
                     if (enabled && sleep_active) {
                         screen_anim_set_subtitle("睡眠", "鼾声监测待命中");
                     }
@@ -1412,8 +1428,9 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                         defer_text_send("{\"type\":\"sensor_data\",\"data\":{\"error\":\"json_alloc_failed\"}}");
                     }
                     cJSON_Delete(resp);
-                    printf("[pressure] kPa=%.2f valid=%d\n",
-                           sd.pressure_kpa, sd.pressure_valid ? 1 : 0);
+                    MONITOR_DEBUG_PRINTF("[pressure] kPa=%.2f valid=%d\n",
+                                         sd.pressure_kpa,
+                                         sd.pressure_valid ? 1 : 0);
                 }
                 else if (strcmp(type->valuestring, "dialog_end") == 0) {
                     end_tts_stream(true);
@@ -1424,8 +1441,9 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                         portENTER_CRITICAL(&s_event_spinlock);
                         s_wake_ack_id = (uint32_t)wake_id->valuedouble;
                         portEXIT_CRITICAL(&s_event_spinlock);
-                        printf("wake acknowledged id=%lu\n",
-                               (unsigned long)s_wake_ack_id);
+                        MONITOR_DEBUG_PRINTF(
+                            "wake acknowledged id=%lu\n",
+                            (unsigned long)s_wake_ack_id);
                     }
                 }
                 else if (strcmp(type->valuestring, "pong") == 0) {
@@ -1707,6 +1725,11 @@ bool ws_client_is_tts_active(void)
 bool ws_client_is_music_active(void)
 {
     return s_music_active;
+}
+
+void ws_client_stop_tts_now(void)
+{
+    stop_music_playback_now();
 }
 
 bool ws_client_consume_music_barge_result(bool *stop)

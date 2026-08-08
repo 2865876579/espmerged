@@ -6,6 +6,7 @@
  */
 
 #include "sensors.h"
+#include "monitor_log.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -18,7 +19,6 @@
 #include "esp_err.h"
 #include "esp_intr_alloc.h"
 #include "esp_log.h"
-#include "esp_random.h"
 #include "esp_rom_sys.h"
 #include "hal/adc_types.h"
 #include "ads1115_fsr402.h"
@@ -59,7 +59,6 @@ static const char *TAG = "sensors";
 #define RADAR_QUERY_INTERVAL_MS 3000
 #define RADAR_MOTION_QUERY_INTERVAL_MS 1000
 #define RADAR_DEBUG_FRAME_LIMIT 12
-#define FSR_VITALS_INTERVAL_MS 1000
 
 
 #define MQ135_ADC_UNIT          ADC_UNIT_1
@@ -158,10 +157,6 @@ static uint8_t s_radar_body_motion;
 static TickType_t s_radar_last_update_tick;
 static TickType_t s_radar_motion_last_update_tick;
 static uint8_t s_radar_debug_frames;
-static uint8_t s_fsr_heart_bpm;
-static uint8_t s_fsr_breath_bpm;
-static uint8_t s_fsr_body_motion;
-static TickType_t s_fsr_vitals_last_tick;
 static portMUX_TYPE s_radar_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
 /**
@@ -552,53 +547,6 @@ static void radar_get_body_motion(float *level, bool *valid)
                  (xTaskGetTickCount() - last_tick) <= pdMS_TO_TICKS(RADAR_STALE_MS);
     if (level) *level = fresh ? (float)motion : 0.0f;
     if (valid) *valid = fresh;
-}
-
-static uint8_t clamp_u8_i32(int value, int min_value, int max_value)
-{
-    if (value < min_value) return (uint8_t)min_value;
-    if (value > max_value) return (uint8_t)max_value;
-    return (uint8_t)value;
-}
-
-static void apply_fsr_vitals(sensor_data_t *data, bool person_present)
-{
-    if (!data) {
-        return;
-    }
-    if (!person_present) {
-        s_fsr_heart_bpm = 0;
-        s_fsr_breath_bpm = 0;
-        s_fsr_body_motion = 0;
-        s_fsr_vitals_last_tick = 0;
-        return;
-    }
-
-    TickType_t now = xTaskGetTickCount();
-    if (s_fsr_heart_bpm == 0 || s_fsr_breath_bpm == 0 ||
-        s_fsr_vitals_last_tick == 0 ||
-        (now - s_fsr_vitals_last_tick) >= pdMS_TO_TICKS(FSR_VITALS_INTERVAL_MS)) {
-        uint32_t r = esp_random();
-        if (s_fsr_heart_bpm == 0) {
-            s_fsr_heart_bpm = (uint8_t)(62 + (r % 18));
-            s_fsr_breath_bpm = (uint8_t)(12 + ((r >> 8) % 6));
-            s_fsr_body_motion = (uint8_t)((r >> 16) % 4);
-        } else {
-            s_fsr_heart_bpm = clamp_u8_i32(
-                (int)s_fsr_heart_bpm + ((int)(r & 0x03) - 1), 58, 88);
-            s_fsr_breath_bpm = clamp_u8_i32(
-                (int)s_fsr_breath_bpm + ((int)((r >> 4) & 0x03) - 1), 10, 20);
-            s_fsr_body_motion = clamp_u8_i32(
-                (int)s_fsr_body_motion + ((int)((r >> 8) & 0x03) - 1), 0, 8);
-        }
-        s_fsr_vitals_last_tick = now;
-    }
-
-    data->radar_heart_bpm = s_fsr_heart_bpm;
-    data->radar_breath_bpm = s_fsr_breath_bpm;
-    data->radar_valid = true;
-    data->body_motion_level = (float)s_fsr_body_motion;
-    data->body_motion_valid = true;
 }
 
 static void radar_handle_frame(const uint8_t *frame, size_t frame_len)
@@ -1062,6 +1010,31 @@ void init_sensors(void)
     ESP_LOGI(TAG, "========== Sensor Init Done ==========");
 }
 
+void sensor_print_init_status(void)
+{
+    const char *ready = "\u6b63\u5e38";       // 正常
+    const char *missing = "\u672a\u8fde\u63a5";  // 未连接
+
+    // 使用统一的一行一设备格式，既能在比赛启动阶段快速核对硬件，
+    // 又不会恢复底层驱动的大量调试输出。
+    printf("[\u521d\u59cb\u5316] \u56db\u8def FSR: %s\n",
+           s_fsr_ads_ready ? ready : missing);
+    printf("[\u521d\u59cb\u5316] \u6c14\u56ca\u538b\u529b/NTC: %s\n",
+           s_mcp_ads_ready ? ready : missing);
+    printf("[\u521d\u59cb\u5316] \u6beb\u7c73\u6ce2\u96f7\u8fbe: %s\n",
+           s_radar_ready ? ready : missing);
+    printf("[\u521d\u59cb\u5316] BH1750 \u5149\u7167: %s\n",
+           s_bh1750_ready ? ready : missing);
+    printf("[\u521d\u59cb\u5316] SHT31 \u6e29\u6e7f\u5ea6: %s\n",
+           s_sht31_ready ? ready : missing);
+    printf("[\u521d\u59cb\u5316] MQ135 \u7a7a\u6c14\u8d28\u91cf: %s\n",
+           s_mq135_ready ? ready : missing);
+    printf("[\u521d\u59cb\u5316] \u7ea2\u5916\u73af\u5883\u8054\u52a8: %s\n",
+           s_ky005_ready ? ready : missing);
+    printf("[\u521d\u59cb\u5316] LCD \u4e32\u53e3\u5c4f: %s\n",
+           s_usart_ready ? ready : missing);
+}
+
 void sensor_task(void *arg)
 {
     (void)arg;
@@ -1111,7 +1084,6 @@ void sensor_task(void *arg)
         radar_set_person_gate(person_now);
         radar_get_values(&data.radar_heart_bpm, &data.radar_breath_bpm, &data.radar_valid);
         radar_get_body_motion(&data.body_motion_level, &data.body_motion_valid);
-        apply_fsr_vitals(&data, person_now);
 
         if (s_usart_ready) {
             bool fsr_any_valid = false;
@@ -1164,21 +1136,19 @@ void sensor_task(void *arg)
         memcpy(&s_latest, &data, sizeof(s_latest));
         portEXIT_CRITICAL(&s_data_spinlock);
 
-        printf("[FSR] force=[%.2f, %.2f, %.2f, %.2f]N "
-               "valid=[%d, %d, %d, %d] pressure=%.2f kPa pressure_valid=%d\n",
-               data.fsr_force_n[0],
-               data.fsr_force_n[1],
-               data.fsr_force_n[2],
-               data.fsr_force_n[3],
-               data.fsr_valid[0] ? 1 : 0,
-               data.fsr_valid[1] ? 1 : 0,
-               data.fsr_valid[2] ? 1 : 0,
-               data.fsr_valid[3] ? 1 : 0,
-               (double)data.pressure_kpa,
-               data.pressure_valid ? 1 : 0);
+        MONITOR_DEBUG_PRINTF(
+            "[FSR] force=[%.2f, %.2f, %.2f, %.2f]N "
+            "valid=[%d, %d, %d, %d] pressure=%.2f kPa pressure_valid=%d\n",
+            data.fsr_force_n[0], data.fsr_force_n[1],
+            data.fsr_force_n[2], data.fsr_force_n[3],
+            data.fsr_valid[0] ? 1 : 0, data.fsr_valid[1] ? 1 : 0,
+            data.fsr_valid[2] ? 1 : 0, data.fsr_valid[3] ? 1 : 0,
+            (double)data.pressure_kpa,
+            data.pressure_valid ? 1 : 0);
 
         /* 鈹€鈹€ 浜哄憳灏卞瘽妫€娴嬶紙FSR 鍔涙晱浼犳劅鍣級鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
         bool person_event_now = false;
+        bool person_left_now = false;
         portENTER_CRITICAL(&s_data_spinlock);
         if (person_now) {
             if (++s_person_debounce >= PERSON_DEBOUNCE_COUNT && !s_person_on_bed) {
@@ -1187,13 +1157,16 @@ void sensor_task(void *arg)
                 person_event_now = true;
             }
         } else {
+            person_left_now = s_person_on_bed;
             s_person_debounce = 0;
             s_person_on_bed = false;
             s_person_event = false;
         }
         portEXIT_CRITICAL(&s_data_spinlock);
         if (person_event_now) {
-            printf("person detected (FSR >= %.2fN)\n", PERSON_FSR_THRESHOLD_N);
+            printf("[在枕] FSR 检测到用户，生命体征监测已开启\n");
+        } else if (person_left_now) {
+            printf("[离枕] FSR 检测为无人，生命体征已归零\n");
         }
 
         if (s_sensor_refresh_done) {
