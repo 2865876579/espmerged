@@ -210,6 +210,7 @@ esp_err_t ky005_send_nec(uint8_t address, uint8_t command)
     /* --- 通过 RMT 发送 symbol 数组 --- */
     rmt_transmit_config_t transmit_config = {
         .loop_count = 0,    /* 不循环，只发送一次 */
+        .flags.eot_level = 0, /* 高电平有效模块发送结束后保持低电平，关闭红外灯 */
     };
     ESP_RETURN_ON_ERROR(rmt_transmit(s_tx_channel, s_copy_encoder, symbols,
                                      index * sizeof(symbols[0]), &transmit_config),
@@ -243,6 +244,7 @@ esp_err_t ky005_send_nec_repeat(void)
 
     rmt_transmit_config_t transmit_config = {
         .loop_count = 0,
+        .flags.eot_level = 0,
     };
     ESP_RETURN_ON_ERROR(rmt_transmit(s_tx_channel, s_copy_encoder, symbols,
                                      sizeof(symbols), &transmit_config),
@@ -291,6 +293,7 @@ esp_err_t ky005_send_raw(const uint32_t *durations, size_t num_pairs)
     /* 通过 RMT 发送 */
     rmt_transmit_config_t transmit_config = {
         .loop_count = 0,
+        .flags.eot_level = 0,
     };
     ESP_RETURN_ON_ERROR(rmt_transmit(s_tx_channel, s_copy_encoder, symbols,
                                      num_pairs * sizeof(rmt_symbol_word_t),

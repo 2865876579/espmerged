@@ -992,7 +992,8 @@ void init_sensors(void)
     ky005_config_t ky005_cfg = KY005_DEFAULT_CONFIG(KY005_TX_GPIO);
     ky005_cfg.carrier_hz = 38000;
     ky005_cfg.carrier_duty_percent = 50.0f;
-    ky005_cfg.active_low = true;
+    // 3 W MOS 驱动模块为高电平有效：空闲时必须保持低电平，避免红外灯持续导通发热。
+    ky005_cfg.active_low = false;
     s_ky005_ready = init_result("KY-005", ky005_init(&ky005_cfg));
     ESP_LOGI(TAG, "KY-022 RX reserved on GPIO%d", KY022_RX_GPIO);
 
@@ -1350,7 +1351,7 @@ static esp_err_t send_air_conditioner_command(bool power_on)
     ESP_RETURN_ON_ERROR(send_gree_state_frame(frame0, name), TAG, "send AC frame0 failed");
     vTaskDelay(pdMS_TO_TICKS(gap_ms));
     ESP_RETURN_ON_ERROR(send_gree_state_frame(frame1, name), TAG, "send AC frame1 failed");
-    ESP_LOGI(TAG, "IR %s command sent: frames=2 gap=%lums carrier=38000Hz active_low",
+    ESP_LOGI(TAG, "IR %s command sent: frames=2 gap=%lums carrier=38000Hz active_high",
              name, (unsigned long)gap_ms);
     return ESP_OK;
 }
