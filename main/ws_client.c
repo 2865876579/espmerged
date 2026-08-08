@@ -49,6 +49,22 @@ static char s_device_id[32] = "esp32s3-unknown";
 static QueueHandle_t s_audio_queue = NULL;  // 音频数据队列（WebSocket → Audio Task）
 static volatile uint32_t s_tts_chunks_queued = 0;
 static volatile uint32_t s_tts_chunks_dropped = 0;
+static volatile uint32_t s_active_tts_stream_id = 0;
+static volatile uint32_t s_expected_tts_sequence = 0;
+static volatile uint32_t s_tts_underruns = 0;
+static volatile uint32_t s_tts_sequence_gaps = 0;
+static volatile uint32_t s_tts_min_queue = UINT32_MAX;
+static volatile uint32_t s_tts_max_queue = 0;
+static volatile uint32_t s_tts_start_buffer_frames = 4;
+static volatile uint32_t s_tts_start_delay_ms = 0;
+static volatile uint32_t s_last_tts_stream_id = 0;
+static volatile uint32_t s_last_tts_underruns = 0;
+static volatile uint32_t s_last_tts_dropped = 0;
+static volatile uint32_t s_last_tts_sequence_gaps = 0;
+static volatile uint32_t s_last_tts_min_queue = 0;
+static volatile uint32_t s_last_tts_max_queue = 0;
+static volatile uint32_t s_last_tts_start_delay_ms = 0;
+static volatile int64_t s_tts_stream_started_us = 0;
 static OpusDecoder *s_decoder = NULL;  // ★ 模块级，避免每次 TTS 懒初始化
 static SemaphoreHandle_t s_decoder_mutex = NULL;
 static SemaphoreHandle_t s_send_mutex = NULL;
@@ -584,12 +600,18 @@ static void start_avatar_restore_default(void)
 #define AUDIO_PLAYBACK_DRAIN_MS 80
 #define TTS_WAKE_GUARD_MS 1500
 #define AUDIO_SUBTITLE_MAX_BYTES 192
+#define AUDIO_START_BUFFER_MIN_FRAMES 3
+#define AUDIO_START_BUFFER_MAX_FRAMES 8
+#define AUDIO_START_BUFFER_WAIT_MS 360
+#define AUDIO_FRAME_HEADER_BYTES 12
 
 // 队列元素：一个 Opus 编码帧
 typedef struct {
     uint8_t *data;   // heap 分配，audio task 负责 free
     size_t   len;
     char    *subtitle;
+    uint32_t stream_id;
+    uint32_t sequence;
 } audio_chunk_t;
 
 static void free_audio_chunk(audio_chunk_t *chunk)
@@ -638,10 +660,18 @@ static void unlock_decoder(void)
     }
 }
 
-static void begin_tts_stream(bool music)
+static void begin_tts_stream(bool music, uint32_t stream_id, uint32_t buffer_frames)
 {
     clear_audio_queue();
+    audio_out_aec_stream_start();
+    if (buffer_frames < AUDIO_START_BUFFER_MIN_FRAMES) {
+        buffer_frames = AUDIO_START_BUFFER_MIN_FRAMES;
+    } else if (buffer_frames > AUDIO_START_BUFFER_MAX_FRAMES) {
+        buffer_frames = AUDIO_START_BUFFER_MAX_FRAMES;
+    }
     portENTER_CRITICAL(&s_event_spinlock);
+    s_active_tts_stream_id = stream_id;
+    s_expected_tts_sequence = 0;
     s_tts_active = true;
     s_music_active = music;
     s_music_barge_result_ready = false;
@@ -652,6 +682,13 @@ static void begin_tts_stream(bool music)
     portEXIT_CRITICAL(&s_event_spinlock);
     s_tts_chunks_queued = 0;
     s_tts_chunks_dropped = 0;
+    s_tts_underruns = 0;
+    s_tts_sequence_gaps = 0;
+    s_tts_min_queue = UINT32_MAX;
+    s_tts_max_queue = 0;
+    s_tts_start_buffer_frames = buffer_frames;
+    s_tts_start_delay_ms = 0;
+    s_tts_stream_started_us = esp_timer_get_time();
 
     // ★ 预创建 Opus 解码器，避免首帧到达时才 malloc 导致丢帧
     if (!lock_decoder(pdMS_TO_TICKS(100))) {
@@ -674,6 +711,7 @@ static void begin_tts_stream(bool music)
 static void stop_music_playback_now(void)
 {
     clear_audio_queue();
+    audio_out_aec_stream_stop();
     portENTER_CRITICAL(&s_event_spinlock);
     s_tts_active = false;
     s_music_active = false;
@@ -683,7 +721,9 @@ static void stop_music_playback_now(void)
     s_tts_playback_done = true;
     portEXIT_CRITICAL(&s_event_spinlock);
 
-    audio_chunk_t end = { .data = NULL, .len = 0 };
+    audio_chunk_t end = {
+        .data = NULL, .len = 0, .stream_id = s_active_tts_stream_id
+    };
     xQueueSend(s_audio_queue, &end, 0);
 }
 
@@ -695,7 +735,9 @@ static void end_tts_stream(bool dialog_end)
         portEXIT_CRITICAL(&s_event_spinlock);
     }
 
-    audio_chunk_t end = { .data = NULL, .len = 0 };
+    audio_chunk_t end = {
+        .data = NULL, .len = 0, .stream_id = s_active_tts_stream_id
+    };
     if (xQueueSend(s_audio_queue, &end,
                    pdMS_TO_TICKS(AUDIO_END_SEND_TIMEOUT_MS)) != pdTRUE) {
         ESP_LOGE(TAG, "TTS end marker enqueue failed");
@@ -714,7 +756,8 @@ static void end_tts_stream(bool dialog_end)
 
 
 // ============================================================
-static bool enqueue_opus_frame(const uint8_t *data, size_t len, const char *source)
+static bool enqueue_opus_frame(const uint8_t *data, size_t len, const char *source,
+                               uint32_t stream_id, uint32_t sequence)
 {
     if (!data || len == 0 || len >= 4096) {
         s_tts_chunks_dropped++;
@@ -728,7 +771,12 @@ static bool enqueue_opus_frame(const uint8_t *data, size_t len, const char *sour
     }
     memcpy(opus_data, data, len);
 
-    audio_chunk_t chunk = { .data = opus_data, .len = len };
+    audio_chunk_t chunk = {
+        .data = opus_data,
+        .len = len,
+        .stream_id = stream_id,
+        .sequence = sequence,
+    };
     if (xQueueSend(s_audio_queue, &chunk,
                    pdMS_TO_TICKS(AUDIO_QUEUE_SEND_TIMEOUT_MS)) == pdTRUE) {
         s_tts_chunks_queued++;
@@ -765,6 +813,7 @@ static bool enqueue_subtitle_marker(const char *text)
         .data = NULL,
         .len = 1,
         .subtitle = copy,
+        .stream_id = s_active_tts_stream_id,
     };
     if (xQueueSend(s_audio_queue, &marker,
                    pdMS_TO_TICKS(AUDIO_QUEUE_SEND_TIMEOUT_MS)) == pdTRUE) {
@@ -791,19 +840,39 @@ static void audio_player_task(void *arg)
             xTaskNotifyGive(s_pump_task);
         }
 
-        if (xQueueReceive(s_audio_queue, &chunk, pdMS_TO_TICKS(500)) != pdTRUE) {
+        TickType_t receive_wait = tx_active && s_tts_active
+            ? pdMS_TO_TICKS(180)
+            : pdMS_TO_TICKS(500);
+        if (xQueueReceive(s_audio_queue, &chunk, receive_wait) != pdTRUE) {
             // ★ xiaozhi: TX 常开，空闲时写静音填充，不产生开关跳变
             if (tx_active) {
-                memset(stereo, 0, sizeof(stereo));
-                audio_out_write((const uint8_t *)stereo, sizeof(stereo));
-                played_frames = 0;
+                if (s_tts_active) {
+                    // The I2S DMA already owns several frames. Do not enqueue an
+                    // extra 60ms silence merely because the software queue is
+                    // briefly empty; that created audible gaps on an otherwise
+                    // healthy real-time stream. auto_clear supplies silence only
+                    // if the hardware itself genuinely drains.
+                    s_tts_underruns++;
+                } else {
+                    memset(stereo, 0, sizeof(stereo));
+                    audio_out_write((const uint8_t *)stereo, sizeof(stereo));
+                    played_frames = 0;
+                }
             }
             continue;
         }
 
         if (chunk.subtitle) {
-            screen_anim_set_subtitle("小安", chunk.subtitle);
+            if (chunk.stream_id == 0 || chunk.stream_id == s_active_tts_stream_id) {
+                screen_anim_set_subtitle("小安", chunk.subtitle);
+            }
             free(chunk.subtitle);
+            continue;
+        }
+
+        if (chunk.stream_id != 0 && chunk.stream_id != s_active_tts_stream_id) {
+            free_audio_chunk(&chunk);
+            s_tts_chunks_dropped++;
             continue;
         }
 
@@ -811,11 +880,19 @@ static void audio_player_task(void *arg)
         if (chunk.data == NULL) {
             // ★ 刷静音填满整个 DMA 环，根除残留音频回绕
             audio_out_flush_silence();
+            audio_out_aec_stream_stop();
             if (played_frames > 0) {
                 vTaskDelay(pdMS_TO_TICKS(AUDIO_PLAYBACK_DRAIN_MS));
             }
             played_frames = 0;
             tx_active = false;
+            s_last_tts_stream_id = s_active_tts_stream_id;
+            s_last_tts_underruns = s_tts_underruns;
+            s_last_tts_dropped = s_tts_chunks_dropped;
+            s_last_tts_sequence_gaps = s_tts_sequence_gaps;
+            s_last_tts_min_queue = s_tts_min_queue == UINT32_MAX ? 0 : s_tts_min_queue;
+            s_last_tts_max_queue = s_tts_max_queue;
+            s_last_tts_start_delay_ms = s_tts_start_delay_ms;
             portENTER_CRITICAL(&s_event_spinlock);
             if (s_tts_active) {
                 s_tts_active = false;
@@ -831,6 +908,26 @@ static void audio_player_task(void *arg)
             portEXIT_CRITICAL(&s_event_spinlock);
             continue;
         }
+
+        if (played_frames == 0) {
+            int64_t wait_started_us = esp_timer_get_time();
+            uint32_t target = s_tts_start_buffer_frames;
+            while (s_tts_active
+                   && chunk.stream_id == s_active_tts_stream_id
+                   && (uint32_t)(uxQueueMessagesWaiting(s_audio_queue) + 1) < target
+                   && (esp_timer_get_time() - wait_started_us)
+                          < (int64_t)AUDIO_START_BUFFER_WAIT_MS * 1000) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            int64_t first_play_us = esp_timer_get_time();
+            s_tts_start_delay_ms = s_tts_stream_started_us > 0
+                ? (uint32_t)((first_play_us - s_tts_stream_started_us) / 1000)
+                : (uint32_t)((first_play_us - wait_started_us) / 1000);
+        }
+
+        uint32_t queued_now = (uint32_t)uxQueueMessagesWaiting(s_audio_queue);
+        if (queued_now < s_tts_min_queue) s_tts_min_queue = queued_now;
+        if (queued_now > s_tts_max_queue) s_tts_max_queue = queued_now;
 
         // Opus → PCM（解码器由 begin_tts_stream 预创建）
         if (!lock_decoder(pdMS_TO_TICKS(100))) {
@@ -924,7 +1021,9 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
         // 通知 audio task 重置解码器 + 停止播放
         {
             clear_audio_queue();
-            audio_chunk_t end = { .data = NULL, .len = 0 };
+            audio_chunk_t end = {
+                .data = NULL, .len = 0, .stream_id = s_active_tts_stream_id
+            };
             xQueueSend(s_audio_queue, &end, 0);
         }
         break;
@@ -961,9 +1060,34 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                 if (aggregated_fragment) clear_ws_fragment();
                 break;
             }
-            enqueue_opus_frame((const uint8_t *)data->data_ptr,
-                               (size_t)data->data_len,
-                               "binary");
+            const uint8_t *opus = (const uint8_t *)data->data_ptr;
+            size_t opus_len = (size_t)data->data_len;
+            uint32_t stream_id = s_active_tts_stream_id;
+            uint32_t sequence = s_expected_tts_sequence;
+            if (opus_len > AUDIO_FRAME_HEADER_BYTES
+                && memcmp(opus, "XAF1", 4) == 0) {
+                memcpy(&stream_id, opus + 4, sizeof(stream_id));
+                memcpy(&sequence, opus + 8, sizeof(sequence));
+                opus += AUDIO_FRAME_HEADER_BYTES;
+                opus_len -= AUDIO_FRAME_HEADER_BYTES;
+                if (stream_id != s_active_tts_stream_id) {
+                    s_tts_chunks_dropped++;
+                    if (aggregated_fragment) clear_ws_fragment();
+                    break;
+                }
+                if (sequence < s_expected_tts_sequence) {
+                    // Retransmitted/late frame. Playing it would repeat a syllable.
+                    s_tts_chunks_dropped++;
+                    if (aggregated_fragment) clear_ws_fragment();
+                    break;
+                }
+                if (sequence > s_expected_tts_sequence) {
+                    s_tts_sequence_gaps += sequence - s_expected_tts_sequence;
+                }
+            }
+            if (enqueue_opus_frame(opus, opus_len, "binary", stream_id, sequence)) {
+                s_expected_tts_sequence = sequence + 1;
+            }
             if (aggregated_fragment) clear_ws_fragment();
             break;
         }
@@ -981,7 +1105,12 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                 if (strcmp(type->valuestring, "tts_audio_start") == 0) {
                     cJSON *source = cJSON_GetObjectItem(json, "source");
                     const char *source_text = cJSON_GetStringValue(source);
-                    begin_tts_stream(source_text && strstr(source_text, "music"));
+                    cJSON *stream = cJSON_GetObjectItem(json, "stream_id");
+                    cJSON *buffer = cJSON_GetObjectItem(json, "buffer_frames");
+                    begin_tts_stream(
+                        source_text && strstr(source_text, "music"),
+                        cJSON_IsNumber(stream) ? (uint32_t)stream->valuedouble : 0,
+                        cJSON_IsNumber(buffer) ? (uint32_t)buffer->valueint : 4);
                 }
                 else if (strcmp(type->valuestring, "tts") == 0) {
                     cJSON *state = cJSON_GetObjectItem(json, "state");
@@ -989,10 +1118,20 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                         if (strcmp(state->valuestring, "start") == 0) {
                             cJSON *source = cJSON_GetObjectItem(json, "source");
                             const char *source_text = cJSON_GetStringValue(source);
-                            begin_tts_stream(source_text && strstr(source_text, "music"));
+                            cJSON *stream = cJSON_GetObjectItem(json, "stream_id");
+                            cJSON *buffer = cJSON_GetObjectItem(json, "buffer_frames");
+                            begin_tts_stream(
+                                source_text && strstr(source_text, "music"),
+                                cJSON_IsNumber(stream) ? (uint32_t)stream->valuedouble : 0,
+                                cJSON_IsNumber(buffer) ? (uint32_t)buffer->valueint : 4);
                         } else if (strcmp(state->valuestring, "stop") == 0) {
-                            cJSON *dialog_end = cJSON_GetObjectItem(json, "dialog_end");
-                            end_tts_stream(dialog_end && cJSON_IsTrue(dialog_end));
+                            cJSON *stream = cJSON_GetObjectItem(json, "stream_id");
+                            uint32_t stop_stream = cJSON_IsNumber(stream)
+                                ? (uint32_t)stream->valuedouble : s_active_tts_stream_id;
+                            if (stop_stream == s_active_tts_stream_id) {
+                                cJSON *dialog_end = cJSON_GetObjectItem(json, "dialog_end");
+                                end_tts_stream(dialog_end && cJSON_IsTrue(dialog_end));
+                            }
                         } else if (strcmp(state->valuestring, "sentence_start") == 0) {
                             // ★ 流式显示 AI 回复文本
                             cJSON *text = cJSON_GetObjectItem(json, "text");
@@ -1018,7 +1157,12 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                                 mbedtls_base64_decode(opus_data, out_len, &actual, (const unsigned char *)b64, b64_len);
 
                                 // 入队列（非阻塞，队满就丢，保护 websocket 任务）
-                                audio_chunk_t chunk = { .data = opus_data, .len = actual };
+                                audio_chunk_t chunk = {
+                                    .data = opus_data,
+                                    .len = actual,
+                                    .stream_id = s_active_tts_stream_id,
+                                    .sequence = s_expected_tts_sequence++,
+                                };
                                 if (xQueueSend(s_audio_queue, &chunk,
                                                pdMS_TO_TICKS(AUDIO_QUEUE_SEND_TIMEOUT_MS)) == pdTRUE) {
                                     s_tts_chunks_queued++;
@@ -1032,8 +1176,13 @@ static void ws_event_handler(void *arg, esp_event_base_t event_base,
                     }
                 }
                 else if (strcmp(type->valuestring, "tts_audio_end") == 0) {
-                    cJSON *dialog_end = cJSON_GetObjectItem(json, "dialog_end");
-                    end_tts_stream(dialog_end && cJSON_IsTrue(dialog_end));
+                    cJSON *stream = cJSON_GetObjectItem(json, "stream_id");
+                    uint32_t end_stream = cJSON_IsNumber(stream)
+                        ? (uint32_t)stream->valuedouble : s_active_tts_stream_id;
+                    if (end_stream == s_active_tts_stream_id) {
+                        cJSON *dialog_end = cJSON_GetObjectItem(json, "dialog_end");
+                        end_tts_stream(dialog_end && cJSON_IsTrue(dialog_end));
+                    }
                 }
                 else if (strcmp(type->valuestring, "listen_once") == 0) {
                     cJSON *reason = cJSON_GetObjectItem(json, "reason");
@@ -1847,6 +1996,28 @@ bool ws_client_consume_tts_playback_done(void)
     s_tts_playback_done = false;
     portEXIT_CRITICAL(&s_event_spinlock);
     return value;
+}
+
+bool ws_client_format_tts_playback_done(char *out, size_t out_size)
+{
+    if (!out || out_size == 0) {
+        return false;
+    }
+    int written = snprintf(
+        out, out_size,
+        "{\"type\":\"tts_playback_done\",\"stream_id\":%lu,"
+        "\"underruns\":%lu,\"dropped\":%lu,\"sequence_gaps\":%lu,"
+        "\"min_queue\":%lu,\"max_queue\":%lu,\"start_delay_ms\":%lu,"
+        "\"aec_delay_ms\":%d}",
+        (unsigned long)s_last_tts_stream_id,
+        (unsigned long)s_last_tts_underruns,
+        (unsigned long)s_last_tts_dropped,
+        (unsigned long)s_last_tts_sequence_gaps,
+        (unsigned long)s_last_tts_min_queue,
+        (unsigned long)s_last_tts_max_queue,
+        (unsigned long)s_last_tts_start_delay_ms,
+        audio_out_aec_delay_ms());
+    return written > 0 && (size_t)written < out_size;
 }
 
 bool ws_client_consume_interaction_listen_request(void)

@@ -109,6 +109,7 @@ typedef struct {
     int peak;
     int active;
     int samples;
+    int capture_elapsed_ms;
     int *result;
     TaskHandle_t waiter;
 } opus_upload_job_t;
@@ -116,7 +117,12 @@ typedef struct {
 static void send_pending_tts_playback_ack(void)
 {
     if (ws_client_consume_tts_playback_done()) {
-        ws_client_send_raw("{\"type\":\"tts_playback_done\"}");
+        char payload[256];
+        if (ws_client_format_tts_playback_done(payload, sizeof(payload))) {
+            ws_client_send_raw(payload);
+        } else {
+            ws_client_send_raw("{\"type\":\"tts_playback_done\"}");
+        }
     }
 }
 
@@ -124,9 +130,36 @@ static record_result_t record_and_send(bool music_barge_in);
 
 static playback_barge_result_t listen_for_playback_stop(void)
 {
-    afe_set_playback_stop_detection(true);
-    record_result_t barge = record_and_send(true);
-    afe_set_playback_stop_detection(false);
+    record_result_t barge = RECORD_NO_SPEECH;
+    if (afe_playback_stop_is_available()) {
+        // Product path: MultiNet consumes the already AEC-processed AFE stream
+        // locally. Do not continuously upload loudspeaker residue to cloud STT;
+        // that previously created several parallel STT sessions per sentence,
+        // competed with TTS traffic, and made playback appear unstable.
+        afe_set_playback_stop_detection(true);
+        int waited_ms = 0;
+        while (waited_ms < REC_BARGE_MAX_DURATION_MS
+               && ws_client_is_connected()
+               && ws_client_is_tts_active()) {
+            if (s_playback_wake_stop_requested
+                || afe_consume_playback_stop_detected()) {
+                barge = RECORD_STOP_COMMAND;
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(20));
+            waited_ms += 20;
+            if (waited_ms % 1000 == 0) {
+                ws_client_send_raw("{\"type\":\"ping\"}");
+            }
+        }
+        afe_set_playback_stop_detection(false);
+    } else {
+        // Model initialization failure only: retain cloud recognition as a
+        // degraded fallback instead of losing interruption completely.
+        afe_set_playback_stop_detection(true);
+        barge = record_and_send(true);
+        afe_set_playback_stop_detection(false);
+    }
     // 处理唤醒回调恰好发生在录音收尾和上面最后一次轮询
     // 之间的竞态，同时不让事件残留到下一次 TTS。
     if (barge != RECORD_STOP_COMMAND
@@ -426,11 +459,13 @@ static void live_opus_close(live_opus_upload_t *upload)
     upload->started = false;
 }
 
-static bool live_opus_start(live_opus_upload_t *upload, bool music_barge_in)
+static bool live_opus_start(live_opus_upload_t *upload, bool music_barge_in,
+                            int capture_elapsed_ms)
 {
     opus_upload_job_t job = {
         .command = OPUS_UPLOAD_STREAM_START,
         .music_barge_in = music_barge_in,
+        .capture_elapsed_ms = capture_elapsed_ms,
     };
     if (!submit_opus_job(&job)) {
         return false;
@@ -584,9 +619,12 @@ static void opus_upload_task(void *arg)
             stream_bytes = 0;
             if (ws_client_is_connected()) {
                 stream_encoder = create_opus_encoder();
-                const char *start_json = job.music_barge_in
-                    ? "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"music_barge_in\"}"
-                    : "{\"type\":\"listen\",\"state\":\"start\",\"mode\":\"auto\"}";
+                char start_json[160];
+                snprintf(start_json, sizeof(start_json),
+                         "{\"type\":\"listen\",\"state\":\"start\","
+                         "\"mode\":\"%s\",\"capture_elapsed_ms\":%d}",
+                         job.music_barge_in ? "music_barge_in" : "auto",
+                         job.capture_elapsed_ms);
                 sent = stream_encoder && ws_client_send_raw(start_json);
                 if (!sent && stream_encoder) {
                     opus_encoder_destroy(stream_encoder);
@@ -772,7 +810,7 @@ static record_result_t record_and_send(bool music_barge_in)
         }
         if (!live.started && !live_disabled &&
             afe_capture_seen_speech() && ws_client_is_connected()) {
-            if (live_opus_start(&live, music_barge_in)) {
+            if (live_opus_start(&live, music_barge_in, waited_ms)) {
                 MONITOR_DEBUG_PRINTF(
                     "audio stream started: capture=%lldms\n",
                     (long long)((esp_timer_get_time() - capture_started_us) / 1000));

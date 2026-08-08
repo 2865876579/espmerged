@@ -9,6 +9,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
+#include "esp_timer.h"
 
 static const char *TAG = "audio_out";
 
@@ -38,6 +39,13 @@ static volatile bool s_tx_enabled = false;
 // ── AEC 参考信号 ring buffer ──────────────────────────
 // 借鉴 xiaozhi：播放音频时同步抄一份给 AFE 做回声消除
 #define REF_BUF_SAMPLES  9600   // 600ms @ 16kHz
+#define REF_DEFAULT_DELAY_SAMPLES 1920  // 120ms: safe initial estimate before correlation
+#define REF_MIN_DELAY_SAMPLES      640  // 40ms
+#define REF_MAX_DELAY_SAMPLES     3840  // 240ms
+#define REF_DRIFT_HYSTERESIS        24
+#define AEC_CALIB_WINDOW_SAMPLES   256
+#define AEC_CALIB_STEP_SAMPLES      64  // 4ms search resolution
+#define AEC_CALIB_INTERVAL_US  1000000
 static int16_t *s_ref_ring = NULL;
 // 软件 AEC 参考必须是一条与麦克风等速前进的 PCM 流。
 // 原先每次都按“当前写指针 - 固定延迟”取一块，当 60ms 播放包和
@@ -45,6 +53,12 @@ static int16_t *s_ref_ring = NULL;
 // 单调读写指针的 FIFO，与小智 Box Lite 的软件回采方式一致。
 static uint64_t s_ref_write_pos = 0;
 static uint64_t s_ref_read_pos = 0;
+static volatile int s_ref_target_delay = REF_DEFAULT_DELAY_SAMPLES;
+static volatile bool s_ref_stream_active = false;
+static volatile bool s_ref_delay_ready = false;
+static volatile int64_t s_last_calibration_us = 0;
+static volatile uint32_t s_ref_drop_corrections = 0;
+static volatile uint32_t s_ref_repeat_corrections = 0;
 static portMUX_TYPE s_ref_lock = portMUX_INITIALIZER_UNLOCKED;
 
 
@@ -181,14 +195,49 @@ int audio_out_read_ref(int16_t *out, int want)
         return want;
     }
 
-    // ★ 有锁顺序读：每个播放样本只给 AFE 一次。
+    // Keep the software reference behind the speaker write cursor by the
+    // calibrated acoustic/DMA delay.  The two I2S controllers have independent
+    // clocks, so a one-sample drop/repeat is applied only when the FIFO moves
+    // outside a small hysteresis band.  This prevents slow M/R drift during a
+    // long story without an audible effect (the correction is on the AEC-only R
+    // channel, never on the speaker signal).
     portENTER_CRITICAL(&s_ref_lock);
     uint64_t available = s_ref_write_pos - s_ref_read_pos;
+    int consume = want;
+    if (s_ref_stream_active && !s_ref_delay_ready) {
+        if (available >= (uint64_t)(s_ref_target_delay + want)) {
+            s_ref_delay_ready = true;
+        } else {
+            portEXIT_CRITICAL(&s_ref_lock);
+            memset(out, 0, want * sizeof(int16_t));
+            return want;
+        }
+    }
+    if (s_ref_stream_active && s_ref_delay_ready) {
+        int64_t error = (int64_t)available
+                        - (int64_t)(s_ref_target_delay + want);
+        if (error > REF_DRIFT_HYSTERESIS && available > (uint64_t)(want + 1)) {
+            consume = want + 1;
+            s_ref_drop_corrections++;
+        } else if (error < -REF_DRIFT_HYSTERESIS && want > 1
+                   && available >= (uint64_t)want) {
+            consume = want - 1;
+            s_ref_repeat_corrections++;
+        }
+    }
     int copy = available < (uint64_t)want ? (int)available : want;
     for (int i = 0; i < copy; i++) {
         out[i] = s_ref_ring[(s_ref_read_pos + (uint64_t)i) % REF_BUF_SAMPLES];
     }
-    s_ref_read_pos += (uint64_t)copy;
+    if (copy == want && consume == want - 1) {
+        // The next block starts one sample earlier, effectively repeating a
+        // single R sample and slowing the reference clock by 1/16k second.
+        s_ref_read_pos += (uint64_t)(want - 1);
+    } else if (copy == want && consume == want + 1) {
+        s_ref_read_pos += (uint64_t)(want + 1);
+    } else {
+        s_ref_read_pos += (uint64_t)copy;
+    }
     portEXIT_CRITICAL(&s_ref_lock);
 
     // 当前没有播放参考时补零，不重放旧参考帧。
@@ -196,6 +245,109 @@ int audio_out_read_ref(int16_t *out, int want)
         memset(out + copy, 0, (want - copy) * sizeof(int16_t));
     }
     return want;
+}
+
+
+void audio_out_aec_stream_start(void)
+{
+    portENTER_CRITICAL(&s_ref_lock);
+    // Discard reference from a previous reply.  Initial zero R frames allow the
+    // FIFO to build exactly the selected delay before sequential consumption.
+    s_ref_read_pos = s_ref_write_pos;
+    s_ref_stream_active = true;
+    s_ref_delay_ready = false;
+    s_ref_drop_corrections = 0;
+    s_ref_repeat_corrections = 0;
+    s_last_calibration_us = 0;
+    portEXIT_CRITICAL(&s_ref_lock);
+}
+
+
+void audio_out_aec_stream_stop(void)
+{
+    portENTER_CRITICAL(&s_ref_lock);
+    s_ref_stream_active = false;
+    s_ref_delay_ready = false;
+    // AFE receives zero rather than stale audio after the echo tail/flush.
+    s_ref_read_pos = s_ref_write_pos;
+    portEXIT_CRITICAL(&s_ref_lock);
+}
+
+
+int audio_out_aec_delay_ms(void)
+{
+    return (s_ref_target_delay * 1000) / SAMPLE_RATE;
+}
+
+
+void audio_out_aec_observe_mic(const int16_t *interleaved, int stride, int samples)
+{
+    if (!interleaved || stride <= 0 || samples < AEC_CALIB_WINDOW_SAMPLES
+        || !s_ref_stream_active || !s_ref_delay_ready || !s_ref_ring) {
+        return;
+    }
+    int64_t now_us = esp_timer_get_time();
+    if (now_us - s_last_calibration_us < AEC_CALIB_INTERVAL_US) {
+        return;
+    }
+    s_last_calibration_us = now_us;
+
+    // Snapshot only monotonic positions. Ring samples are 16-bit atomic and the
+    // searched history is at least 40ms behind the writer, so correlation can run
+    // outside a spinlock without blocking I2S/Wi-Fi interrupts.
+    uint64_t write_snapshot = s_ref_write_pos;
+    if (write_snapshot < REF_MAX_DELAY_SAMPLES + AEC_CALIB_WINDOW_SAMPLES) {
+        return;
+    }
+    const int mic_start = samples - AEC_CALIB_WINDOW_SAMPLES;
+    double best_score = 0.0;
+    double second_score = 0.0;
+    int best_delay = s_ref_target_delay;
+
+    for (int delay = REF_MIN_DELAY_SAMPLES;
+         delay <= REF_MAX_DELAY_SAMPLES;
+         delay += AEC_CALIB_STEP_SAMPLES) {
+        uint64_t ref_start = write_snapshot - (uint64_t)delay
+                             - AEC_CALIB_WINDOW_SAMPLES;
+        double xy = 0.0, xx = 0.0, yy = 0.0;
+        // Downsample correlation 4:1; sufficient for delay estimation and cheap
+        // enough to run once per second in the microphone feed task.
+        for (int i = 0; i < AEC_CALIB_WINDOW_SAMPLES; i += 4) {
+            double x = (double)s_ref_ring[(ref_start + (uint64_t)i)
+                                          % REF_BUF_SAMPLES];
+            double y = (double)interleaved[(mic_start + i) * stride];
+            xy += x * y;
+            xx += x * x;
+            yy += y * y;
+        }
+        if (xx < 64.0 * 300.0 * 300.0 || yy < 64.0 * 80.0 * 80.0) {
+            continue;
+        }
+        double score = fabs(xy) / sqrt(xx * yy);
+        if (score > best_score) {
+            second_score = best_score;
+            best_score = score;
+            best_delay = delay;
+        } else if (score > second_score) {
+            second_score = score;
+        }
+    }
+
+    // Require a meaningful and reasonably unique echo peak. Smooth updates so
+    // speech/noise in one window cannot abruptly move the reference timeline.
+    if (best_score >= 0.22 && best_score >= second_score * 1.04) {
+        int old_delay = s_ref_target_delay;
+        int new_delay = (old_delay * 3 + best_delay) / 4;
+        if (new_delay < REF_MIN_DELAY_SAMPLES) new_delay = REF_MIN_DELAY_SAMPLES;
+        if (new_delay > REF_MAX_DELAY_SAMPLES) new_delay = REF_MAX_DELAY_SAMPLES;
+        s_ref_target_delay = new_delay;
+        if (abs(new_delay - old_delay) >= AEC_CALIB_STEP_SAMPLES * 2) {
+            ESP_LOGI(TAG, "AEC delay calibrated: %dms corr=%.2f drift=-%lu/+%lu",
+                     audio_out_aec_delay_ms(), best_score,
+                     (unsigned long)s_ref_drop_corrections,
+                     (unsigned long)s_ref_repeat_corrections);
+        }
+    }
 }
 
 

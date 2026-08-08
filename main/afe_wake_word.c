@@ -45,11 +45,15 @@ static volatile bool s_capture_seen_speech = false;
 static volatile bool s_capture_vad_speech = false;
 static volatile int  s_capture_vad_speech_samples = 0;
 static volatile int  s_capture_last_voice_idx = 0;
+static volatile int  s_capture_no_speech_ms = 3000;
+static volatile int  s_capture_end_silence_ms = 500;
 static portMUX_TYPE s_capture_lock = portMUX_INITIALIZER_UNLOCKED;
 
 #define CAPTURE_SAMPLE_RATE          16000
-#define CAPTURE_NO_SPEECH_MS         5000
-#define CAPTURE_END_SILENCE_MS       800
+#define CAPTURE_NO_SPEECH_NORMAL_MS  3000
+#define CAPTURE_NO_SPEECH_BARGE_MS   1200
+#define CAPTURE_END_SILENCE_NORMAL_MS 500
+#define CAPTURE_END_SILENCE_BARGE_MS  320
 #define CAPTURE_MIN_VAD_SPEECH_MS    240
 #define CAPTURE_AC_AVG_THRESHOLD     350
 #define CAPTURE_PEAK_THRESHOLD       2500
@@ -310,6 +314,10 @@ static void afe_feed_task(void *arg)
                 ESP_LOGI(TAG, "mic working, first sample=%d", mic0);
             }
 
+            if (ch >= 2) {
+                audio_out_aec_observe_mic(feed_buf, ch, s_feed_chunksize);
+            }
+
             // 剩余数据前移
             int remain = acc_samples - s_feed_chunksize;
             if (remain > 0) {
@@ -424,8 +432,15 @@ static void afe_fetch_task(void *arg)
                 s_capture_last_voice_idx = s_capture_idx;
             }
 
-            int no_speech_limit = CAPTURE_SAMPLE_RATE * CAPTURE_NO_SPEECH_MS / 1000;
-            int end_silence_limit = CAPTURE_SAMPLE_RATE * CAPTURE_END_SILENCE_MS / 1000;
+            int no_speech_limit = CAPTURE_SAMPLE_RATE * s_capture_no_speech_ms / 1000;
+            int endpoint_ms = s_capture_end_silence_ms;
+            // Long, clearly established speech can use a faster endpoint. Short
+            // starts keep the full window so a natural hesitation is not clipped.
+            if (s_capture_vad_speech_samples >= CAPTURE_SAMPLE_RATE * 12 / 10
+                && endpoint_ms > 420) {
+                endpoint_ms = 420;
+            }
+            int end_silence_limit = CAPTURE_SAMPLE_RATE * endpoint_ms / 1000;
             if (s_capture_idx >= cur_max) {
                 s_capture_done = true;
             } else if (!s_capture_seen_speech && s_capture_idx >= no_speech_limit) {
@@ -708,6 +723,11 @@ void afe_capture_start(int max_samples)
     s_capture_vad_speech = false;
     s_capture_vad_speech_samples = 0;
     s_capture_last_voice_idx = 0;
+    bool barge_profile = max_samples <= CAPTURE_SAMPLE_RATE * 3;
+    s_capture_no_speech_ms = barge_profile
+        ? CAPTURE_NO_SPEECH_BARGE_MS : CAPTURE_NO_SPEECH_NORMAL_MS;
+    s_capture_end_silence_ms = barge_profile
+        ? CAPTURE_END_SILENCE_BARGE_MS : CAPTURE_END_SILENCE_NORMAL_MS;
 
     s_capture_buf  = heap_caps_malloc(max_samples * sizeof(int16_t), MALLOC_CAP_SPIRAM);
     if (!s_capture_buf) {

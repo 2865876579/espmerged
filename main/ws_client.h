@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -41,6 +42,8 @@ void ws_client_clear_events(void);
 bool ws_client_consume_turn_done(void);
 bool ws_client_consume_dialog_end(void);
 bool ws_client_consume_tts_playback_done(void);
+/** Build playback completion telemetry for adaptive cloud-side jitter buffering. */
+bool ws_client_format_tts_playback_done(char *out, size_t out_size);
 bool ws_client_consume_interaction_listen_request(void);
 bool ws_client_request_pillow_tilt_to_kpa(float target_kpa, const char *source);
 bool ws_client_request_pillow_recover_to_kpa(float target_kpa, const char *source);
